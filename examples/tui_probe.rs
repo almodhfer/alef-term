@@ -38,6 +38,13 @@ fn main() -> anyhow::Result<()> {
     println!("alt_screen={} title={:?} cursor=({},{}) visible={}", term.grid.in_alt(), term.title,
         term.grid.screen.cursor.row, term.grid.screen.cursor.col,
         term.modes.contains(arabic_term::term::Modes::CURSOR_VISIBLE));
+    use arabic_term::term::Modes;
+    println!("mouse: click(1000)={} drag(1002)={} motion(1003)={} sgr(1006)={} => grabbed={}",
+        term.modes.contains(Modes::MOUSE_CLICK),
+        term.modes.contains(Modes::MOUSE_DRAG),
+        term.modes.contains(Modes::MOUSE_MOTION),
+        term.modes.contains(Modes::MOUSE_SGR),
+        term.modes.intersects(Modes::MOUSE_CLICK | Modes::MOUSE_DRAG | Modes::MOUSE_MOTION));
     for r in 0..rows {
         let line: String = term.grid.screen.rows[r]
             .cells

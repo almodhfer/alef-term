@@ -29,6 +29,10 @@ pub struct Config {
     /// Text written to the shell once it starts — handy for demos and for
     /// driving the terminal from a test.
     pub startup_cmd: Option<String>,
+    /// Translate the wheel into arrow keys for full-screen programs that have
+    /// not asked for mouse events. Useful for `less` and `man`; unwanted for
+    /// anything that binds the arrows to something destructive.
+    pub alternate_scroll: bool,
 }
 
 impl Default for Config {
@@ -40,6 +44,7 @@ impl Default for Config {
             cols: 96,
             rows: 28,
             startup_cmd: None,
+            alternate_scroll: true,
         }
     }
 }
@@ -140,11 +145,26 @@ impl App {
             }
         }
         if !batch.is_empty() {
+            let was_at_bottom = self.scroll.at_bottom();
+            let retired_before = self.term.grid.scrolled;
             self.vt.feed(&mut self.term, &batch);
-            // New output means the user is looking at live content again.
-            self.scroll.snap_to_bottom();
-            self.term.grid.view_offset = 0;
-            self.renderer.scroll_frac = 0.0;
+            let retired = (self.term.grid.scrolled - retired_before) as f32;
+
+            if was_at_bottom {
+                // Following the tail: stay pinned to the live screen.
+                self.scroll.snap_to_bottom();
+                self.term.grid.view_offset = 0;
+                self.renderer.scroll_frac = 0.0;
+            } else if retired > 0.0 {
+                // Scrolled back. Output must not drag the view along — a
+                // program that repaints continuously would otherwise make
+                // scrolling impossible, cancelling it within milliseconds.
+                // Follow the retiring lines so the same text stays on screen.
+                let max = self.term.grid.scrollback.len() as f32;
+                self.scroll.shift(retired, max);
+                self.term.grid.view_offset = self.scroll.offset();
+                self.needs_redraw = true;
+            }
         }
         for (idx, rgb) in self.term.take_palette_overrides() {
             self.palette.colors[idx as usize] = rgb;
@@ -207,6 +227,16 @@ impl App {
         moving || fading
     }
 
+    /// Apply a wheel movement to our own scrollback. Accumulate only; the
+    /// frame applies it, so a burst of trackpad events costs one redraw.
+    fn scroll_wheel(&mut self, lines: f32) {
+        self.scroll.nudge(lines);
+        self.needs_redraw = true;
+        if let Some(w) = &self.window {
+            w.request_redraw();
+        }
+    }
+
     /// Scroll by a number of lines. Positive moves back into history.
     fn scroll_by(&mut self, lines: f32) {
         self.scroll.nudge(lines);
@@ -219,12 +249,21 @@ impl App {
         self.needs_redraw = true;
     }
 
-    fn send(&mut self, bytes: &[u8]) {
+    /// Write bytes the terminal generates on the application's behalf — mouse
+    /// reports, focus notifications. These must not disturb the view: reporting
+    /// a wheel tick that the application is about to act on should not also
+    /// yank the screen to the bottom.
+    fn write_pty(&mut self, bytes: &[u8]) {
         if let Some(p) = &mut self.pty {
             p.write(bytes);
         }
+    }
+
+    /// Write bytes the user typed. Typing returns to the live screen, as every
+    /// terminal does.
+    fn send(&mut self, bytes: &[u8]) {
+        self.write_pty(bytes);
         if !self.scroll.at_bottom() {
-            // Typing returns to the live screen, as every terminal does.
             self.scroll.snap_to_bottom();
             self.term.grid.view_offset = 0;
             self.renderer.scroll_frac = 0.0;
@@ -282,24 +321,27 @@ impl App {
         self.reflow();
     }
 
+    /// True when an application has asked to receive mouse events.
+    #[inline]
+    fn mouse_grabbed(&self) -> bool {
+        self.term
+            .modes
+            .intersects(Modes::MOUSE_CLICK | Modes::MOUSE_DRAG | Modes::MOUSE_MOTION)
+    }
+
     fn mouse_report(&mut self, button: u8, pressed: bool, row: usize, col: usize) {
-        if !self.term.modes.intersects(Modes::MOUSE_CLICK | Modes::MOUSE_DRAG | Modes::MOUSE_MOTION)
-        {
+        if !self.mouse_grabbed() {
             return;
         }
-        let (r, c) = (row + 1, col + 1);
-        let seq = if self.term.modes.contains(Modes::MOUSE_SGR) {
-            format!("\x1b[<{};{};{}{}", button, c, r, if pressed { 'M' } else { 'm' })
-        } else {
-            let b = if pressed { button } else { 3 };
-            format!(
-                "\x1b[M{}{}{}",
-                (32 + b) as char,
-                (32 + c.min(223)) as u8 as char,
-                (32 + r.min(223)) as u8 as char
-            )
-        };
-        self.send(seq.as_bytes());
+        let seq = crate::mouse::encode(
+            button,
+            pressed,
+            row,
+            col,
+            self.modifiers,
+            self.term.modes.contains(Modes::MOUSE_SGR),
+        );
+        self.write_pty(&seq);
     }
 }
 
@@ -376,7 +418,7 @@ impl ApplicationHandler<Wake> for App {
             WindowEvent::Focused(f) => {
                 self.focused = f;
                 if self.term.modes.contains(Modes::FOCUS_EVENTS) {
-                    self.send(if f { b"\x1b[I" } else { b"\x1b[O" });
+                    self.write_pty(if f { b"\x1b[I" } else { b"\x1b[O" });
                 }
                 self.needs_redraw = true;
             }
@@ -494,7 +536,7 @@ impl ApplicationHandler<Wake> for App {
                     MouseButton::Right => 2,
                     _ => return,
                 };
-                if self.term.modes.intersects(Modes::MOUSE_CLICK | Modes::MOUSE_DRAG) {
+                if self.mouse_grabbed() {
                     self.mouse_report(btn, state == ElementState::Pressed, row, cell);
                     return;
                 }
@@ -539,34 +581,66 @@ impl ApplicationHandler<Wake> for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                // `lines` is in text lines; a discrete wheel notch gets the
+                // usual three-line multiplier, a trackpad's pixel delta does
+                // not — tripling a continuous gesture makes it unusable.
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y,
-                    // A trackpad reports pixels; convert with the real cell
-                    // height so a gesture moves the same distance at any size.
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / self.fonts.cell_h.max(1.0),
+                    MouseScrollDelta::LineDelta(_, y) => y * 3.0,
+                    MouseScrollDelta::PixelDelta(p) => {
+                        p.y as f32 / self.fonts.cell_h.max(1.0)
+                    }
                 };
                 if lines == 0.0 {
                     return;
                 }
-                if self.term.grid.in_alt() {
-                    // Full-screen programs get arrow keys; they have no
-                    // scrollback of our own to move through.
-                    let n = (lines.abs().ceil() as usize).min(5);
-                    let seq: &[u8] = if lines > 0.0 { b"\x1b[A" } else { b"\x1b[B" };
-                    let mut buf = Vec::with_capacity(n * 3);
-                    for _ in 0..n {
-                        buf.extend_from_slice(seq);
-                    }
-                    self.send(&buf);
+
+                // 1. Shift bypasses the application entirely. Without this
+                //    escape hatch there is no way to reach the scrollback while
+                //    a program has the mouse grabbed.
+                if self.modifiers.shift_key() {
+                    self.scroll_wheel(lines);
                     return;
                 }
-                // Accumulate only; the frame applies it. Many events between
-                // two frames cost one redraw, not one each.
-                self.scroll.nudge(lines * 3.0);
-                self.needs_redraw = true;
-                if let Some(w) = &self.window {
-                    w.request_redraw();
+
+                // 2. If the application asked for mouse events, the wheel
+                //    belongs to it. This has to come before the alt-screen
+                //    check: turning the wheel into arrow keys for a program
+                //    that binds them to history edits the user's input.
+                if self.mouse_grabbed() {
+                    let button = if lines > 0.0 {
+                        crate::mouse::BTN_WHEEL_UP
+                    } else {
+                        crate::mouse::BTN_WHEEL_DOWN
+                    };
+                    let (row, cell) = self.mouse_cell;
+                    // One report per line, which is how applications see wheel
+                    // acceleration. The wheel is press-only; there is no
+                    // release to send.
+                    let ticks = (lines.abs().round() as usize).clamp(1, 10);
+                    for _ in 0..ticks {
+                        self.mouse_report(button, true, row, cell);
+                    }
+                    return;
                 }
+
+                // 3. A full-screen program with no mouse grab: offer arrow
+                //    keys, which is how `less` and `man` scroll. Off by
+                //    request, since it is indistinguishable from typing.
+                if self.term.grid.in_alt() {
+                    if self.cfg.alternate_scroll {
+                        let n = (lines.abs().round() as usize).clamp(1, 10);
+                        let seq: &[u8] = if lines > 0.0 { b"\x1b[A" } else { b"\x1b[B" };
+                        let mut buf = Vec::with_capacity(n * 3);
+                        for _ in 0..n {
+                            buf.extend_from_slice(seq);
+                        }
+                        self.write_pty(&buf);
+                    }
+                    return;
+                }
+
+                // 4. Otherwise it is ours to scroll.
+                self.scroll_wheel(lines);
             }
             WindowEvent::RedrawRequested => {
                 self.drain_pty();

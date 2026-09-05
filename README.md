@@ -121,7 +121,8 @@ render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 | `Cmd` `+` / `-` / `0` | font size |
 | `Cmd R` | cycle base direction: LTR → RTL → auto |
 | `Cmd C` / `Cmd V` | copy / paste |
-| scroll wheel | smooth scrollback (arrow keys on the alt screen) |
+| scroll wheel | smooth scrollback, or the application if it grabbed the mouse |
+| `Shift` + wheel | always the terminal's own scrollback |
 | `Shift` `PgUp` / `PgDn` | scroll by a page |
 | `Shift` `Home` / `End` | oldest line / back to the live screen |
 
@@ -158,11 +159,12 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-112 tests, covering: VT and grid behaviour; font coverage and fallback; the
+123 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics
-decoding; scroll easing and coalescing; and end-to-end
+decoding; mouse event encoding; scroll easing, coalescing, and its interaction
+with incoming output; and end-to-end
 tests that drive a real shell — and a real editor — over a PTY, typing Arabic
 through the key encoder and interrupting a running command with Ctrl+C.
 
@@ -174,6 +176,12 @@ which is how the editor and htop cases above were verified.
 without opening a window, which is handy for eyeballing layout changes.
 `cargo run --release --example bench` reports frame times; a 50×200 grid at
 Retina resolution renders in about 1.1 ms.
+
+The wheel goes to the application when it has asked for mouse events, and to
+the terminal's own scrollback otherwise; `Shift` always chooses the scrollback.
+Scrolling back is not disturbed by output arriving underneath it — the view
+follows the retiring lines so the same text stays on screen, and only snaps to
+the bottom when it was already there or when you type.
 
 ### A note on scrolling
 

@@ -17,6 +17,7 @@ fn main() -> anyhow::Result<()> {
             "--arabic-scale" => {
                 cfg.arabic_scale = args.next().and_then(|v| v.parse().ok());
             }
+            "--no-alternate-scroll" => cfg.alternate_scroll = false,
             "--exec" | "-e" => {
                 if let Some(v) = args.next() {
                     cfg.startup_cmd = Some(format!("{v}\n"));
@@ -28,7 +29,9 @@ fn main() -> anyhow::Result<()> {
                      Options:\n  \
                        --font-size <px>       base font size (default 15)\n  \
                        --arabic-scale <f>     Arabic face scale (default: from metrics)\n  \
-                       --exec <cmd>           run a command at startup\n\n\
+                       --exec <cmd>           run a command at startup\n  \
+                       --no-alternate-scroll  do not turn the wheel into arrow\n  \
+                       \u{20}                      keys for full-screen programs\n\n\
                      Keys:\n  \
                        Cmd +/-/0    font size\n  \
                        Cmd R        cycle bidi base direction (auto/LTR/RTL)\n  \

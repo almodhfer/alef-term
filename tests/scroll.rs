@@ -124,3 +124,106 @@ fn viewport_top_moves_with_the_offset() {
         "line3"
     );
 }
+
+#[test]
+fn shifting_follows_retiring_lines_without_animating() {
+    // Content sliding underneath a scrolled-back view: the view has not moved,
+    // the text has, so this must not start an easing animation.
+    let mut s = Scroller::default();
+    s.jump_to(5.0, 100.0);
+    s.shift(3.0, 100.0);
+    assert_eq!(s.pos, 8.0);
+    assert_eq!(s.target, 8.0);
+    assert!(!s.step(FRAME, 100.0), "no animation was started");
+}
+
+#[test]
+fn shifting_is_clamped_to_the_retained_scrollback() {
+    // Once old lines are evicted the view pins to the oldest one left.
+    let mut s = Scroller::default();
+    s.jump_to(9.0, 10.0);
+    s.shift(50.0, 10.0);
+    assert_eq!(s.pos, 10.0);
+    assert_eq!(s.target, 10.0);
+}
+
+#[test]
+fn output_while_scrolled_back_keeps_the_same_text_on_screen() {
+    // The bug this guards: a program that repaints continuously used to yank
+    // the view back to the bottom on every write, making it impossible to
+    // scroll while anything was running.
+    let mut t = Terminal::new(4, 20, 500);
+    let mut vt = Vt::new();
+    for i in 1..=20 {
+        vt.feed(&mut t, format!("line{i}\r\n").as_bytes());
+    }
+    let scrollback_before = t.grid.scrollback.len();
+    let retired_before = t.grid.scrolled;
+
+    // Scroll back so a known line sits at the top of the viewport.
+    let mut s = Scroller::default();
+    s.jump_to(6.0, scrollback_before as f32);
+    t.grid.view_offset = s.offset();
+    let top_text = |t: &Terminal| -> String {
+        t.grid
+            .viewport_row(0)
+            .cells
+            .iter()
+            .map(|c| c.ch)
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    };
+    let pinned = top_text(&t);
+
+    // More output arrives while the user is scrolled back.
+    for i in 21..=25 {
+        vt.feed(&mut t, format!("line{i}\r\n").as_bytes());
+    }
+    let retired = (t.grid.scrolled - retired_before) as f32;
+    assert!(retired > 0.0, "lines should have retired into scrollback");
+
+    // Follow them, as the app does after feeding the parser.
+    s.shift(retired, t.grid.scrollback.len() as f32);
+    t.grid.view_offset = s.offset();
+
+    assert_eq!(top_text(&t), pinned, "the same text must still be on screen");
+}
+
+#[test]
+fn output_while_at_the_bottom_keeps_following_the_tail() {
+    let mut t = Terminal::new(4, 20, 500);
+    let mut vt = Vt::new();
+    let s = Scroller::default();
+    assert!(s.at_bottom());
+    for i in 1..=20 {
+        vt.feed(&mut t, format!("line{i}\r\n").as_bytes());
+    }
+    // At the bottom the view offset stays zero and the newest line is visible.
+    assert_eq!(t.grid.view_offset, 0);
+    let last: String = t
+        .grid
+        .viewport_row(t.grid.rows - 2)
+        .cells
+        .iter()
+        .map(|c| c.ch)
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    assert_eq!(last, "line20");
+}
+
+#[test]
+fn scroll_up_no_longer_adjusts_the_view_offset_itself() {
+    // The Scroller owns the view offset; a second adjustment inside the grid
+    // would double-count and make the view drift under output.
+    let mut t = Terminal::new(4, 20, 500);
+    let mut vt = Vt::new();
+    for i in 1..=20 {
+        vt.feed(&mut t, format!("line{i}\r\n").as_bytes());
+    }
+    t.grid.view_offset = 5;
+    let before = t.grid.view_offset;
+    vt.feed(&mut t, b"more\r\n");
+    assert_eq!(t.grid.view_offset, before, "grid must not move the view itself");
+}

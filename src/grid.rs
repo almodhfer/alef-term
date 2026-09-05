@@ -215,10 +215,10 @@ impl Grid {
             row.reset(bg);
             self.screen.rows.insert(bot - 1, row);
         }
-        // Keep the viewport anchored to the same content while scrolled back.
-        if self.view_offset > 0 {
-            self.view_offset = (self.view_offset + n).min(self.scrollback.len());
-        }
+        // Note: the viewport is *not* adjusted here. While scrolled back the
+        // app owns `view_offset`, driven from its `Scroller`, and it follows
+        // retiring lines using `Grid::scrolled`. Bumping it here as well would
+        // double-count and make the view drift.
     }
 
     /// Scroll the region down by `n` lines (content moves toward the bottom).

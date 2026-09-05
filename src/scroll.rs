@@ -46,6 +46,18 @@ impl Scroller {
         self.pending = 0.0;
     }
 
+    /// Move both position and target by `lines`, without starting an
+    /// animation.
+    ///
+    /// This is for content sliding *underneath* a scrolled-back view: when
+    /// lines retire into scrollback the view has to follow them to stay on the
+    /// same text. Nudging would ease toward a new target, which would look
+    /// like drift; the view has not moved, the content has.
+    pub fn shift(&mut self, lines: f32, max: f32) {
+        self.pos = (self.pos + lines).clamp(0.0, max);
+        self.target = (self.target + lines).clamp(0.0, max);
+    }
+
     /// Advance by one frame of `dt` seconds. Returns true while still moving.
     pub fn step(&mut self, dt: f32, max: f32) -> bool {
         if self.pending != 0.0 {
