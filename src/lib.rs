@@ -9,6 +9,7 @@ pub mod app;
 pub mod boxdraw;
 pub mod color;
 pub mod font;
+pub mod frame_hold;
 pub mod grid;
 pub mod keys;
 pub mod kitty_graphics;
