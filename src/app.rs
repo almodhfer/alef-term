@@ -15,6 +15,18 @@ use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
+/// A pointer position resolved into grid coordinates.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+struct Hit {
+    /// Row within the visible viewport, which is what an application is told.
+    row: usize,
+    /// Absolute line across scrollback and screen, which is what a selection
+    /// anchors to.
+    line: usize,
+    /// Logical cell, mapped back through the row's visual order.
+    cell: usize,
+}
+
 /// Woken by the PTY reader thread so the UI redraws without polling.
 #[derive(Debug, Clone, Copy)]
 pub struct Wake;
@@ -65,7 +77,7 @@ pub struct App {
     focused: bool,
     selection: Option<Selection>,
     selecting: bool,
-    mouse_cell: (usize, usize),
+    mouse_at: Hit,
     /// Button currently held, for drag reporting.
     mouse_held: Option<u8>,
     clipboard: Option<arboard::Clipboard>,
@@ -100,7 +112,7 @@ impl App {
             focused: true,
             selection: None,
             selecting: false,
-            mouse_cell: (0, 0),
+            mouse_at: Hit::default(),
             mouse_held: None,
             clipboard: arboard::Clipboard::new().ok(),
             needs_redraw: true,
@@ -304,9 +316,13 @@ impl App {
         )
     }
 
-    /// Map a pixel position to a logical (row, cell), going through the row's
-    /// visual->logical column map so clicks land on the character the user sees.
-    fn hit_test(&self, pos: PhysicalPosition<f64>) -> (usize, usize) {
+    /// Where a pixel position lands, in both coordinate spaces.
+    ///
+    /// The two must not be confused. Selection needs the **absolute line**, so
+    /// it stays on its text as the view scrolls. Mouse reports need the
+    /// **viewport row**, because that is the only thing the application knows
+    /// about — it has no idea our scrollback exists.
+    fn hit_test(&self, pos: PhysicalPosition<f64>) -> Hit {
         let (cw, ch) = self.cell_size();
         let (px, py) = (self.renderer.pad_x, self.renderer.pad_y);
         let row = (((pos.y as f32 - py) / ch).floor().max(0.0) as usize)
@@ -317,10 +333,11 @@ impl App {
             Some(l) => l.cell_at(col),
             None => col,
         };
-        // Return an absolute line, so a selection stays on the text it was
-        // dragged over even as the view scrolls or output arrives.
-        let abs = (self.term.grid.viewport_top() + row as isize).max(0) as usize;
-        (abs, cell)
+        Hit {
+            row,
+            line: (self.term.grid.viewport_top() + row as isize).max(0) as usize,
+            cell,
+        }
     }
 
     fn paste(&mut self, text: &str) {
@@ -577,7 +594,7 @@ impl ApplicationHandler<Wake> for App {
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let (row, cell) = self.mouse_cell;
+                let at = self.mouse_at;
                 let btn = match button {
                     MouseButton::Left => 0,
                     MouseButton::Middle => 1,
@@ -590,15 +607,15 @@ impl ApplicationHandler<Wake> for App {
                     self.mouse_held = None;
                 }
                 if self.mouse_grabbed() {
-                    self.mouse_report(btn, state == ElementState::Pressed, row, cell);
+                    self.mouse_report(btn, state == ElementState::Pressed, at.row, at.cell);
                     return;
                 }
                 match (button, state) {
                     (MouseButton::Left, ElementState::Pressed) => {
                         self.selecting = true;
                         self.selection = Some(Selection {
-                            start: (row, cell),
-                            end: (row, cell),
+                            start: (at.line, at.cell),
+                            end: (at.line, at.cell),
                             block: self.modifiers.alt_key(),
                         });
                         self.needs_redraw = true;
@@ -623,15 +640,16 @@ impl ApplicationHandler<Wake> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let hit = self.hit_test(position);
-                if hit != self.mouse_cell {
-                    self.mouse_cell = hit;
+                if hit != self.mouse_at {
+                    self.mouse_at = hit;
                     if self.mouse_grabbed() {
-                        self.motion_report(hit.0, hit.1);
+                        // Viewport row, not absolute line.
+                        self.motion_report(hit.row, hit.cell);
                         return;
                     }
                     if self.selecting {
                         if let Some(s) = &mut self.selection {
-                            s.end = hit;
+                            s.end = (hit.line, hit.cell);
                             self.needs_redraw = true;
                         }
                     }
@@ -694,11 +712,11 @@ impl ApplicationHandler<Wake> for App {
                     } else {
                         crate::mouse::BTN_WHEEL_DOWN
                     };
-                    let (row, cell) = self.mouse_cell;
+                    let at = self.mouse_at;
                     // One report per line, which is how applications see wheel
                     // acceleration. The wheel is press-only.
                     for _ in 0..ticks {
-                        self.mouse_report(button, true, row, cell);
+                        self.mouse_report(button, true, at.row, at.cell);
                     }
                     return;
                 }

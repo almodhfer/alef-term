@@ -76,3 +76,39 @@ fn motion_adds_32_to_the_button() {
     // Any-motion with nothing held reports button 3, so 35.
     assert_eq!(enc(MOTION + BTN_NONE, true, 0, 0, none(), true), b"\x1b[<35;1;1M");
 }
+
+/// Reports must carry the row an application can understand.
+///
+/// The terminal tracks two coordinate spaces: the absolute line across
+/// scrollback (what a selection anchors to) and the viewport row (what an
+/// application is told). Feeding the former into a report claims the pointer is
+/// thousands of rows down, which is nonsense to the program receiving it — and
+/// it goes wrong as soon as any scrollback exists, not just while scrolled back.
+#[test]
+fn reported_rows_are_viewport_relative_not_absolute() {
+    use arabic_term::term::{Terminal, Vt};
+    let mut t = Terminal::new(4, 20, 500);
+    let mut vt = Vt::new();
+    for i in 0..50 {
+        vt.feed(&mut t, format!("line{i}\r\n").as_bytes());
+    }
+    assert!(t.grid.scrollback.len() > 40, "scrollback has built up");
+    assert_eq!(t.grid.view_offset, 0, "and we are still at the bottom");
+
+    // The viewport is only 4 rows tall, so any row an application is told about
+    // must be within it, however much history sits behind.
+    let viewport_top = t.grid.viewport_top();
+    assert!(viewport_top > 40, "absolute lines are far from zero");
+
+    for row in 0..t.grid.rows {
+        let seq = enc(BTN_LEFT, true, row, 0, none(), true);
+        let text = String::from_utf8_lossy(&seq).into_owned();
+        let reported: usize =
+            text.trim_start_matches("\x1b[<0;1;").trim_end_matches('M').parse().unwrap();
+        assert!(
+            reported >= 1 && reported <= t.grid.rows,
+            "row {row} reported as {reported}, outside a {}-row viewport",
+            t.grid.rows
+        );
+    }
+}
