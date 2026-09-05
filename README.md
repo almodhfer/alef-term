@@ -121,7 +121,9 @@ render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 | `Cmd` `+` / `-` / `0` | font size |
 | `Cmd R` | cycle base direction: LTR → RTL → auto |
 | `Cmd C` / `Cmd V` | copy / paste |
-| scroll wheel | scrollback (arrow keys on the alt screen) |
+| scroll wheel | smooth scrollback (arrow keys on the alt screen) |
+| `Shift` `PgUp` / `PgDn` | scroll by a page |
+| `Shift` `Home` / `End` | oldest line / back to the live screen |
 
 ## Known limitations
 
@@ -156,11 +158,11 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-104 tests, covering: VT and grid behaviour; font coverage and fallback; the
+112 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics
-decoding; and end-to-end
+decoding; scroll easing and coalescing; and end-to-end
 tests that drive a real shell — and a real editor — over a PTY, typing Arabic
 through the key encoder and interrupting a running command with Ctrl+C.
 
@@ -171,7 +173,20 @@ which is how the editor and htop cases above were verified.
 `cargo run --release --example render_test` renders a showcase screen to a file
 without opening a window, which is handy for eyeballing layout changes.
 `cargo run --release --example bench` reports frame times; a 50×200 grid at
-Retina resolution renders in about 3 ms, re-laying out every row every frame.
+Retina resolution renders in about 1.1 ms.
+
+### A note on scrolling
+
+Scrolling is smooth at sub-line precision, with wheel events coalesced so a
+burst of trackpad ticks costs one redraw rather than one each, and the easing is
+framerate-independent.
+
+It deliberately does **not** do damage tracking. That was measured rather than
+assumed: partial redraw needs a persistent shadow framebuffer, and at Retina
+resolution copying that shadow to the window costs 0.78 ms against 0.90 ms to
+simply repaint every row. The bookkeeping would buy about a tenth of a
+millisecond and cost a great deal of complexity, so the renderer repaints whole
+frames and spends its effort on not drawing frames nobody asked for.
 
 ## Layout
 
@@ -184,6 +199,7 @@ Retina resolution renders in about 3 ms, re-laying out every row every frame.
 | `src/font.rs` | font loading, script fallback, glyph cache |
 | `src/boxdraw.rs` | procedural box-drawing glyphs |
 | `src/keys.rs` | key presses to terminal byte sequences |
+| `src/scroll.rs` | scroll position and easing |
 | `src/selection.rs` | selection and copy |
 | `src/sixel.rs` | sixel image decoding |
 | `src/kitty_graphics.rs` | kitty graphics protocol |

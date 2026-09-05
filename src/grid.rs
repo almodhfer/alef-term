@@ -233,17 +233,39 @@ impl Grid {
         }
     }
 
+    /// Index, in the combined scrollback+screen sequence, of the first line
+    /// shown in the viewport.
+    #[inline]
+    pub fn viewport_top(&self) -> isize {
+        self.scrollback.len() as isize - self.view_offset as isize
+    }
+
+    /// The row at an absolute index across scrollback then screen, if it
+    /// exists. Indices outside the range return `None`, which is what lets the
+    /// renderer ask for the partially-visible line above the viewport while
+    /// smooth-scrolling.
+    pub fn line(&self, abs: isize) -> Option<&Row> {
+        if abs < 0 {
+            return None;
+        }
+        let abs = abs as usize;
+        let sb = self.scrollback.len();
+        if abs < sb {
+            self.scrollback.get(abs)
+        } else {
+            self.screen.rows.get(abs - sb)
+        }
+    }
+
     /// The row displayed at viewport line `i`, honouring scrollback offset.
     pub fn viewport_row(&self, i: usize) -> &Row {
-        if self.view_offset == 0 {
-            return &self.screen.rows[i];
-        }
-        let sb = self.scrollback.len();
-        let start = sb.saturating_sub(self.view_offset);
-        match self.scrollback.get(start + i) {
-            Some(r) => r,
-            None => &self.screen.rows[start + i - sb],
-        }
+        self.line(self.viewport_top() + i as isize).unwrap_or(&self.screen.rows[0])
+    }
+
+    /// Total lines available to scroll through.
+    #[inline]
+    pub fn total_lines(&self) -> usize {
+        self.scrollback.len() + self.rows
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {

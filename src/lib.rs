@@ -16,5 +16,6 @@ pub mod layout;
 pub mod pty;
 pub mod render;
 pub mod sixel;
+pub mod scroll;
 pub mod selection;
 pub mod term;

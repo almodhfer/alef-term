@@ -12,7 +12,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 /// Woken by the PTY reader thread so the UI redraws without polling.
@@ -64,6 +64,9 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     needs_redraw: bool,
     exited: bool,
+    scroll: crate::scroll::Scroller,
+    last_frame: Option<std::time::Instant>,
+    scrollbar_fade: f32,
 }
 
 impl App {
@@ -90,6 +93,9 @@ impl App {
             clipboard: arboard::Clipboard::new().ok(),
             needs_redraw: true,
             exited: false,
+            scroll: Default::default(),
+            last_frame: None,
+            scrollbar_fade: 0.0,
         })
     }
 
@@ -135,8 +141,10 @@ impl App {
         }
         if !batch.is_empty() {
             self.vt.feed(&mut self.term, &batch);
-            // Any output means the user is looking at live content again.
+            // New output means the user is looking at live content again.
+            self.scroll.snap_to_bottom();
             self.term.grid.view_offset = 0;
+            self.renderer.scroll_frac = 0.0;
         }
         for (idx, rgb) in self.term.take_palette_overrides() {
             self.palette.colors[idx as usize] = rgb;
@@ -161,12 +169,65 @@ impl App {
         }
     }
 
+    /// Advance the scroll animation by one frame, and mirror the result into
+    /// the grid and renderer. Returns true while anything is still moving.
+    fn step_scroll(&mut self) -> bool {
+        let now = std::time::Instant::now();
+        let dt = self
+            .last_frame
+            .map(|t| (now - t).as_secs_f32())
+            .unwrap_or(1.0 / 60.0)
+            .clamp(0.0, 0.1);
+        self.last_frame = Some(now);
+
+        let max = self.term.grid.scrollback.len() as f32;
+        let moving = self.scroll.step(dt, max);
+
+        if self.term.grid.view_offset != self.scroll.offset() {
+            self.term.grid.view_offset = self.scroll.offset();
+            self.needs_redraw = true;
+        }
+        if (self.renderer.scroll_frac - self.scroll.frac()).abs() > 0.001 {
+            self.renderer.scroll_frac = self.scroll.frac();
+            self.needs_redraw = true;
+        }
+
+        // The scrollbar shows while scrolled or moving, then fades away.
+        let want = if moving || !self.scroll.at_bottom() { 1.0 } else { 0.0 };
+        let fading = (self.scrollbar_fade - want).abs() > 0.01;
+        if fading {
+            let k = 1.0 - (0.02f32).powf(dt);
+            self.scrollbar_fade += (want - self.scrollbar_fade) * k;
+            self.needs_redraw = true;
+        } else {
+            self.scrollbar_fade = want;
+        }
+        self.renderer.scrollbar_alpha = self.scrollbar_fade;
+
+        moving || fading
+    }
+
+    /// Scroll by a number of lines. Positive moves back into history.
+    fn scroll_by(&mut self, lines: f32) {
+        self.scroll.nudge(lines);
+        self.needs_redraw = true;
+    }
+
+    fn scroll_to(&mut self, lines: f32) {
+        let max = self.term.grid.scrollback.len() as f32;
+        self.scroll.jump_to(lines, max);
+        self.needs_redraw = true;
+    }
+
     fn send(&mut self, bytes: &[u8]) {
         if let Some(p) = &mut self.pty {
             p.write(bytes);
         }
-        if self.term.grid.view_offset != 0 {
+        if !self.scroll.at_bottom() {
+            // Typing returns to the live screen, as every terminal does.
+            self.scroll.snap_to_bottom();
             self.term.grid.view_offset = 0;
+            self.renderer.scroll_frac = 0.0;
             self.needs_redraw = true;
         }
     }
@@ -386,6 +447,37 @@ impl ApplicationHandler<Wake> for App {
                     }
                     return;
                 }
+                // Shift + navigation keys drive our scrollback rather than
+                // being sent on, matching xterm and every terminal since.
+                if self.modifiers.shift_key() && !self.term.grid.in_alt() {
+                    let page = self.term.grid.rows.saturating_sub(1) as f32;
+                    let handled = match &event.logical_key {
+                        Key::Named(NamedKey::PageUp) => {
+                            self.scroll_by(page);
+                            true
+                        }
+                        Key::Named(NamedKey::PageDown) => {
+                            self.scroll_by(-page);
+                            true
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            self.scroll_to(f32::MAX);
+                            true
+                        }
+                        Key::Named(NamedKey::End) => {
+                            self.scroll_to(0.0);
+                            true
+                        }
+                        _ => false,
+                    };
+                    if handled {
+                        if let Some(w) = &self.window {
+                            w.request_redraw();
+                        }
+                        return;
+                    }
+                }
+
                 let text = event.text.as_deref();
                 if let Some(bytes) = self.key_bytes(&event.logical_key, text) {
                     self.send(&bytes);
@@ -448,36 +540,37 @@ impl ApplicationHandler<Wake> for App {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y as i32,
-                    MouseScrollDelta::PixelDelta(p) => (p.y / 20.0) as i32,
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    // A trackpad reports pixels; convert with the real cell
+                    // height so a gesture moves the same distance at any size.
+                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / self.fonts.cell_h.max(1.0),
                 };
-                if lines == 0 {
+                if lines == 0.0 {
                     return;
                 }
                 if self.term.grid.in_alt() {
-                    // Translate scrolling into arrow keys for full-screen apps.
-                    let seq: &[u8] = if lines > 0 { b"\x1b[A" } else { b"\x1b[B" };
-                    let n = lines.unsigned_abs().min(5);
-                    let mut buf = Vec::new();
+                    // Full-screen programs get arrow keys; they have no
+                    // scrollback of our own to move through.
+                    let n = (lines.abs().ceil() as usize).min(5);
+                    let seq: &[u8] = if lines > 0.0 { b"\x1b[A" } else { b"\x1b[B" };
+                    let mut buf = Vec::with_capacity(n * 3);
                     for _ in 0..n {
                         buf.extend_from_slice(seq);
                     }
                     self.send(&buf);
                     return;
                 }
-                let max = self.term.grid.scrollback.len();
-                let cur = self.term.grid.view_offset as i32;
-                let next = (cur + lines * 3).clamp(0, max as i32);
-                if next != cur {
-                    self.term.grid.view_offset = next as usize;
-                    self.needs_redraw = true;
-                    if let Some(w) = &self.window {
-                        w.request_redraw();
-                    }
+                // Accumulate only; the frame applies it. Many events between
+                // two frames cost one redraw, not one each.
+                self.scroll.nudge(lines * 3.0);
+                self.needs_redraw = true;
+                if let Some(w) = &self.window {
+                    w.request_redraw();
                 }
             }
             WindowEvent::RedrawRequested => {
                 self.drain_pty();
+                self.step_scroll();
                 let (Some(win), Some(surface)) = (&self.window, &mut self.surface) else { return };
                 let size = win.inner_size();
                 let (Some(w), Some(h)) =
@@ -519,7 +612,13 @@ impl ApplicationHandler<Wake> for App {
             el.exit();
             return;
         }
-        if self.needs_redraw {
+        // Only ask for another frame while something is actually moving; when
+        // idle the loop goes back to blocking on events rather than spinning.
+        let settled = self.scroll.at_bottom() || self.scroll.pending == 0.0;
+        let animating = !settled
+            || (self.scroll.target - self.scroll.pos).abs() > 0.01
+            || self.renderer.scrollbar_alpha > 0.01 && self.scroll.at_bottom();
+        if self.needs_redraw || animating {
             if let Some(w) = &self.window {
                 w.request_redraw();
             }

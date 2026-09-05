@@ -183,6 +183,11 @@ pub struct Renderer {
     cache: std::collections::HashMap<u64, RowLayout>,
     /// Keys touched this frame, used to evict what has gone stale.
     live: Vec<u64>,
+    /// Sub-line scroll offset, 0..1 of a cell. Non-zero while a smooth scroll
+    /// is in flight, which is what lets content move by fractions of a row.
+    pub scroll_frac: f32,
+    /// Opacity of the scrollbar, faded out when idle.
+    pub scrollbar_alpha: f32,
 }
 
 impl Renderer {
@@ -199,6 +204,8 @@ impl Renderer {
             pad_y: 2.0,
             cache: std::collections::HashMap::new(),
             live: Vec::new(),
+            scroll_frac: 0.0,
+            scrollbar_alpha: 0.0,
         }
     }
 
@@ -235,22 +242,35 @@ impl Renderer {
             }
         };
 
-        let mut keys: Vec<u64> = Vec::with_capacity(rows);
+        let mut keys: Vec<u64> = Vec::with_capacity(rows + 1);
         self.live.clear();
+        // While smooth-scrolling, one extra row is visible at each edge.
+        let frac = self.scroll_frac.clamp(0.0, 1.0);
+        let first: isize = if frac > 0.0 { -1 } else { 0 };
         let bidi_on = term.modes.contains(crate::term::Modes::BIDI);
 
-        for r in 0..rows {
-            let row = term.grid.viewport_row(r);
+        let top = term.grid.viewport_top();
+        for ri in first..rows as isize {
+            let abs = top + ri;
+            let Some(row) = term.grid.line(abs) else {
+                if ri >= 0 {
+                    keys.push(0);
+                }
+                continue;
+            };
+            let r = ri.max(0) as usize;
             // Joining context across a soft wrap: a word broken by the right
             // margin has not ended, so its letters must still take their joined
             // forms on both sides of the break.
-            let pre = if r > 0 && term.grid.viewport_row(r - 1).wrapped {
-                row_tail(term.grid.viewport_row(r - 1), cols)
-            } else {
-                String::new()
+            let pre = match term.grid.line(abs - 1) {
+                Some(prev) if prev.wrapped => row_tail(prev, cols),
+                _ => String::new(),
             };
-            let post = if row.wrapped && r + 1 < rows {
-                row_head(term.grid.viewport_row(r + 1), cols)
+            let post = if row.wrapped {
+                match term.grid.line(abs + 1) {
+                    Some(next) => row_head(next, cols),
+                    None => String::new(),
+                }
             } else {
                 String::new()
             };
@@ -269,12 +289,13 @@ impl Renderer {
                 self.cache.insert(key, fresh);
             }
             let layout = self.cache.get(&key).expect("just inserted");
-            let y = self.pad_y + r as f32 * cell_h;
+            let y = self.pad_y + (ri as f32 + frac) * cell_h;
 
             // --- backgrounds, in visual column order ---
             for (col, &cell_idx) in layout.visual_cells.iter().enumerate() {
                 let Some(cell) = row.cells.get(cell_idx) else { continue };
-                let selected = selection.map_or(false, |s| s.contains(r, cell_idx));
+                let selected =
+                    ri >= 0 && selection.map_or(false, |s| s.contains(r, cell_idx));
                 let inverse = cell.attrs.contains(Attrs::INVERSE) ^ reverse;
                 let mut bg = if inverse {
                     resolve(cell.fg, true)
@@ -321,7 +342,8 @@ impl Renderer {
                     continue;
                 }
                 let inverse = cell.attrs.contains(Attrs::INVERSE) ^ reverse;
-                let selected = selection.map_or(false, |s| s.contains(r, g.cell));
+                let selected =
+                    ri >= 0 && selection.map_or(false, |s| s.contains(r, g.cell));
                 let mut fg = if inverse {
                     resolve(cell.bg, false)
                 } else {
@@ -371,7 +393,9 @@ impl Renderer {
                 }
             }
 
-            keys.push(key);
+            if ri >= 0 {
+                keys.push(key);
+            }
         }
 
         self.layouts = keys;
@@ -390,7 +414,7 @@ impl Renderer {
             if rel >= rows as u64 + 64 {
                 continue;
             }
-            let y = self.pad_y + rel as f32 * cell_h;
+            let y = self.pad_y + (rel as f32 + frac) * cell_h;
             let x = self.pad_x + placed.col as f32 * cell_w;
             if y > canvas.height as f32 {
                 continue;
@@ -404,6 +428,32 @@ impl Renderer {
             );
         }
 
+        // --- scrollbar, shown while scrolled back and faded out when idle ---
+        if self.scrollbar_alpha > 0.01 && !term.grid.in_alt() {
+            let total = term.grid.total_lines().max(1);
+            if total > rows {
+                let track_h = rows as f32 * cell_h;
+                let thumb_h = (rows as f32 / total as f32 * track_h).max(cell_h);
+                // view_offset counts lines back from the live screen, so a zero
+                // offset puts the thumb at the bottom.
+                let scrolled = term.grid.view_offset as f32;
+                let max_scroll = (total - rows) as f32;
+                let t = 1.0 - (scrolled / max_scroll.max(1.0)).clamp(0.0, 1.0);
+                let y = self.pad_y + t * (track_h - thumb_h);
+                let w = 4.0;
+                let x = canvas.width as f32 - w - 2.0;
+                let a = self.scrollbar_alpha.clamp(0.0, 1.0);
+                let fg = palette.selection_bg;
+                let blend = |c: u8, d: u8| ((c as f32 * a) + (d as f32 * (1.0 - a))) as u8;
+                let col = Rgb(
+                    blend(fg.0, def_bg.0),
+                    blend(fg.1, def_bg.1),
+                    blend(fg.2, def_bg.2),
+                );
+                canvas.fill_rect(x, y, w, thumb_h, col);
+            }
+        }
+
         // --- cursor, mapped through the row's logical->visual column map ---
         if term.modes.contains(crate::term::Modes::CURSOR_VISIBLE) && term.grid.view_offset == 0 {
             let cur = term.grid.screen.cursor;
@@ -414,7 +464,7 @@ impl Renderer {
                 };
                 let col = layout.column_of(cur.col.min(cols.saturating_sub(1)));
                 let x = self.pad_x + col as f32 * cell_w;
-                let y = self.pad_y + cur.row as f32 * cell_h;
+                let y = self.pad_y + (cur.row as f32 + frac) * cell_h;
                 if focused {
                     canvas.fill_rect(x, y, cell_w, cell_h, palette.cursor);
                     // Re-draw the glyph(s) of that cell in the background
