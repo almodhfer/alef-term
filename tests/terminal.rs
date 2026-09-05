@@ -316,3 +316,63 @@ fn scroll_region_is_clamped_when_the_screen_shrinks() {
     vt.feed(&mut t, b"\x1b[1;1Hafter resize");
     assert_eq!(line(&t, 0), "after resize");
 }
+
+#[test]
+fn a_sixel_sequence_places_an_image_and_moves_the_cursor_below_it() {
+    let mut t = Terminal::new(20, 40, 100);
+    t.set_cell_px(8.0, 16.0);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1bPq\"1;1;16;32#1;2;100;0;0!16~-!16~-!16~-!16~-!16~-!16~\x1b\\");
+
+    assert_eq!(t.images.len(), 1);
+    let img = &t.images[0];
+    assert_eq!(img.image.width, 16);
+    assert!(img.image.height >= 32);
+    assert_eq!(img.line, 0, "placed on the line the cursor was on");
+    // 36 pixels tall over 16px cells is 3 rows, so the cursor lands below.
+    assert!(t.grid.screen.cursor.row >= 2, "cursor moved past the image");
+    assert_eq!(t.grid.screen.cursor.col, 0);
+}
+
+#[test]
+fn an_image_stays_pinned_to_its_text_when_the_screen_scrolls() {
+    let mut t = Terminal::new(4, 20, 100);
+    t.set_cell_px(8.0, 16.0);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1bPq#1;2;0;100;0!4~\x1b\\");
+    let placed_at = t.images[0].line;
+    assert_eq!(t.grid.scrolled, 0);
+
+    // Push the image off the top.
+    for _ in 0..8 {
+        vt.feed(&mut t, b"x\r\n");
+    }
+    assert!(t.grid.scrolled > 0, "screen scrolled");
+    // The image keeps its absolute line, so it scrolls with the text rather
+    // than staying stuck to a screen row.
+    assert_eq!(t.images[0].line, placed_at);
+}
+
+#[test]
+fn a_non_sixel_dcs_is_ignored() {
+    // DECRQSS and friends must not be mistaken for image data.
+    let mut t = Terminal::new(5, 20, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1bP$qm\x1b\\hello");
+    assert!(t.images.is_empty());
+    assert_eq!(line(&t, 0), "hello");
+}
+
+#[test]
+fn images_are_pruned_once_they_fall_out_of_scrollback() {
+    let mut t = Terminal::new(4, 20, 8);
+    t.set_cell_px(8.0, 16.0);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1bPq#1;2;0;0;100!4~\x1b\\");
+    assert_eq!(t.images.len(), 1);
+    for _ in 0..300 {
+        vt.feed(&mut t, b"line\r\n");
+    }
+    t.prune_images();
+    assert!(t.images.is_empty(), "an image far outside the scrollback is dropped");
+}

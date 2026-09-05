@@ -125,14 +125,14 @@ render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 
 ## Known limitations
 
-- **macOS only.** Font paths are a hardcoded list (see the table above) rather
-  than a real system font query, and the clipboard is the system one.
-- **Shaping does not cross a soft wrap.** A word broken across two display rows
-  is shaped as two pieces, so the letters at the break do not join.
-- **Not yet exercised interactively at length.** Everything below is covered by
-  tests or by driving real programs over a PTY, but the window has had little
-  hands-on use; mouse selection and IME-based Arabic input in particular are
-  implemented but only lightly tested.
+- **Built and tested on macOS.** Fonts are found through the platform font
+  database, so the stack is not macOS-specific, but nothing else has been run on
+  Linux or Windows and the clipboard is whatever `arboard` provides.
+- **No kitty graphics protocol.** Sixel is supported; kitty's newer image
+  protocol is not.
+- **Little hands-on interactive use.** Everything is covered by tests or by
+  driving real programs over a PTY, but the window itself has had few hours of
+  real use; IME-based Arabic input is the least exercised path.
 
 ## What's implemented
 
@@ -142,8 +142,14 @@ characters and lines, `DECSTBM` scroll regions, the alternate screen, scrollback
 autowrap with deferred wrap at the margin, wide (CJK) characters with spacers,
 combining marks, DEC line-drawing charset, mouse reporting (normal and SGR),
 bracketed paste, focus events, window title (OSC 0/2), palette changes (OSC 4),
-hyperlinks (OSC 8), device status reports, selection and clipboard, and resize
-propagated to the child via `TIOCSWINSZ`.
+hyperlinks (OSC 8), clipboard writes (OSC 52), device status reports, the kitty
+keyboard protocol's disambiguation flag, sixel images, selection and clipboard,
+and resize propagated to the child via `TIOCSWINSZ`.
+
+Sixel images are pinned to the line they were drawn on, so they scroll with
+their text:
+
+![sixel](docs/sixel.png)
 
 ## Testing
 
@@ -151,11 +157,12 @@ propagated to the child via `TIOCSWINSZ`.
 cargo test
 ```
 
-55 tests: VT/grid behaviour, font coverage and fallback, the Arabic layout itself (reordering, ligatures,
-diacritics, mirroring, column pinning, cell-grid alignment), key encoding, and
-end-to-end tests that drive a real shell — and a real editor — over a PTY,
-including typing Arabic through the key encoder and interrupting a running
-command with Ctrl+C.
+96 tests, covering: VT and grid behaviour; font coverage and fallback; the
+Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
+column pinning, cell-grid alignment, joining across a soft wrap); key encoding
+including the kitty protocol; selection and copy; sixel decoding; and end-to-end
+tests that drive a real shell — and a real editor — over a PTY, typing Arabic
+through the key encoder and interrupting a running command with Ctrl+C.
 
 `cargo run --release --example tui_probe -- /bin/sh "htop\n<<PAUSE>>"` drives a
 full-screen program through the terminal and dumps both the grid and a render,
@@ -177,6 +184,8 @@ Retina resolution renders in about 3 ms, re-laying out every row every frame.
 | `src/font.rs` | font loading, script fallback, glyph cache |
 | `src/boxdraw.rs` | procedural box-drawing glyphs |
 | `src/keys.rs` | key presses to terminal byte sequences |
+| `src/selection.rs` | selection and copy |
+| `src/sixel.rs` | sixel image decoding |
 | `src/pty.rs` | PTY and the shell process |
 | `src/app.rs` | window, input, event loop |
 

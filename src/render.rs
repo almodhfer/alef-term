@@ -70,6 +70,41 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Blend straight (non-premultiplied) RGBA image data.
+    pub fn blit_rgba(&mut self, data: &[u8], gw: usize, gh: usize, ox: i32, oy: i32) {
+        for row in 0..gh {
+            let y = oy + row as i32;
+            if y < 0 || y as usize >= self.height {
+                continue;
+            }
+            let dst_base = y as usize * self.width;
+            for col in 0..gw {
+                let i = (row * gw + col) * 4;
+                let a = data[i + 3] as u32;
+                if a == 0 {
+                    continue;
+                }
+                let x = ox + col as i32;
+                if x < 0 || x as usize >= self.width {
+                    continue;
+                }
+                let d = &mut self.buf[dst_base + x as usize];
+                if a == 255 {
+                    *d = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | data[i + 2] as u32;
+                    continue;
+                }
+                let inv = 255 - a;
+                let dr = (*d >> 16) & 0xff;
+                let dg = (*d >> 8) & 0xff;
+                let db = *d & 0xff;
+                let r = (data[i] as u32 * a + dr * inv + 127) / 255;
+                let g = (data[i + 1] as u32 * a + dg * inv + 127) / 255;
+                let b = (data[i + 2] as u32 * a + db * inv + 127) / 255;
+                *d = (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+
     /// Blend premultiplied-ish BGRA colour bitmap data (colour emoji).
     fn blit_color(&mut self, data: &[u8], gw: usize, gh: usize, ox: i32, oy: i32) {
         for row in 0..gh {
@@ -344,6 +379,29 @@ impl Renderer {
         if self.cache.len() > self.layouts.len() * 4 + 256 {
             let live: std::collections::HashSet<u64> = self.layouts.iter().copied().collect();
             self.cache.retain(|k, _| live.contains(k));
+        }
+
+        // --- images, drawn under the cursor but over the text background ---
+        for placed in &term.images {
+            // The image is pinned to an absolute line; work out where that
+            // lands in the viewport, if anywhere.
+            let top_line = term.grid.scrolled.saturating_sub(term.grid.view_offset as u64);
+            let Some(rel) = placed.line.checked_sub(top_line) else { continue };
+            if rel >= rows as u64 + 64 {
+                continue;
+            }
+            let y = self.pad_y + rel as f32 * cell_h;
+            let x = self.pad_x + placed.col as f32 * cell_w;
+            if y > canvas.height as f32 {
+                continue;
+            }
+            canvas.blit_rgba(
+                &placed.image.rgba,
+                placed.image.width as usize,
+                placed.image.height as usize,
+                x.round() as i32,
+                y.round() as i32,
+            );
         }
 
         // --- cursor, mapped through the row's logical->visual column map ---

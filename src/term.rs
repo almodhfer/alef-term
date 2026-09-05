@@ -5,6 +5,17 @@ use crate::grid::{Attrs, Cell, Grid, Row, Screen};
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
+/// An image placed on the screen, pinned to the absolute line it was drawn on.
+pub struct Placed {
+    /// Absolute line (grid.scrolled + screen row) of the image's top edge.
+    pub line: u64,
+    /// Column of its left edge.
+    pub col: usize,
+    /// Cell width in pixels at the time it was placed.
+    pub cell_w: f32,
+    pub image: crate::sixel::Image,
+}
+
 bitflags::bitflags! {
     /// DEC private and ANSI modes we actually act on.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,6 +75,13 @@ pub struct Terminal {
     pub replies: Vec<u8>,
     /// Set whenever the visible content changed and a redraw is needed.
     pub damaged: bool,
+    /// Images placed by sixel, pinned to the absolute line they were drawn on
+    /// so they scroll with their text.
+    pub images: Vec<Placed>,
+    /// Buffer for the DCS payload currently being collected.
+    dcs: Vec<u8>,
+    /// True while the collected DCS is a sixel sequence we intend to decode.
+    dcs_is_sixel: bool,
     /// Kitty keyboard protocol flag stack. Applications push a set of flags
     /// while they want richer key reporting and pop it on exit, so nesting
     /// (an editor inside a multiplexer) restores the outer program's mode.
@@ -76,6 +94,8 @@ pub struct Terminal {
     /// True when charset G0 is the DEC line-drawing set (ESC ( 0).
     dec_graphics: bool,
     tab_stops: Vec<bool>,
+    /// Pixel size of a cell, needed to lay images out in rows.
+    cell_px: (f32, f32),
     palette_overrides: Vec<(u8, Rgb)>,
 }
 
@@ -88,11 +108,15 @@ impl Terminal {
             title: String::from("arabic-term"),
             replies: Vec::new(),
             damaged: true,
+            images: Vec::new(),
+            dcs: Vec::new(),
+            dcs_is_sixel: false,
             kitty_keyboard: Vec::new(),
             clipboard_write: None,
             link: None,
             dec_graphics: false,
             tab_stops: default_tabs(cols),
+            cell_px: (8.0, 16.0),
             palette_overrides: Vec::new(),
         }
     }
@@ -101,6 +125,39 @@ impl Terminal {
     #[inline]
     pub fn kitty_flags(&self) -> u8 {
         self.kitty_keyboard.last().copied().unwrap_or(0)
+    }
+
+    /// Place a decoded image at the cursor and advance past it.
+    fn place_image(&mut self, img: crate::sixel::Image) {
+        let (cw, ch) = self.cell_px;
+        let rows_tall = ((img.height as f32 / ch.max(1.0)).ceil() as usize).max(1);
+        let col = self.grid.screen.cursor.col;
+        let line = self.grid.scrolled + self.grid.screen.cursor.row as u64;
+
+        // Bound how many images we retain; old ones are dropped oldest-first.
+        if self.images.len() >= 256 {
+            self.images.remove(0);
+        }
+        self.images.push(Placed { line, col, cell_w: cw, image: img });
+
+        // The cursor moves below the image, scrolling if it runs off the bottom.
+        for _ in 0..rows_tall {
+            self.linefeed();
+        }
+        self.grid.screen.cursor.col = 0;
+        self.damaged = true;
+    }
+
+    /// Tell the terminal the pixel size of a cell, so images can be measured
+    /// in rows. The UI updates this when the font size changes.
+    pub fn set_cell_px(&mut self, w: f32, h: f32) {
+        self.cell_px = (w.max(1.0), h.max(1.0));
+    }
+
+    /// Drop images that have scrolled beyond the retained scrollback.
+    pub fn prune_images(&mut self) {
+        let oldest = self.grid.scrolled.saturating_sub(self.grid.max_scrollback as u64);
+        self.images.retain(|p| p.line + 64 >= oldest);
     }
 
     pub fn take_palette_overrides(&mut self) -> Vec<(u8, Rgb)> {
@@ -527,9 +584,32 @@ impl Perform for Terminal {
         }
     }
 
-    fn hook(&mut self, _p: &Params, _i: &[u8], _ig: bool, _a: char) {}
-    fn put(&mut self, _byte: u8) {}
-    fn unhook(&mut self) {}
+    fn hook(&mut self, _p: &Params, intermediates: &[u8], _ig: bool, action: char) {
+        // Sixel is `DCS <params> q` with no intermediate. `DCS $ q` is DECRQSS
+        // asking for a setting back, and shares the same final byte — checking
+        // only that would turn every status request into a broken image.
+        self.dcs.clear();
+        self.dcs_is_sixel = action == 'q' && intermediates.is_empty();
+    }
+
+    fn put(&mut self, byte: u8) {
+        // Cap the payload so a stream that never terminates cannot grow it
+        // without bound.
+        if self.dcs.len() < 16 << 20 {
+            self.dcs.push(byte);
+        }
+    }
+
+    fn unhook(&mut self) {
+        if !self.dcs_is_sixel {
+            self.dcs.clear();
+            return;
+        }
+        let data = std::mem::take(&mut self.dcs);
+        self.dcs_is_sixel = false;
+        let Some(img) = crate::sixel::decode(&data) else { return };
+        self.place_image(img);
+    }
 
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
         let Some(cmd) = params.first() else { return };

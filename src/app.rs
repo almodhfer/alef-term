@@ -108,6 +108,8 @@ impl App {
         if cols != self.term.grid.cols || rows != self.term.grid.rows {
             self.term.resize(rows, cols);
         }
+        self.term.set_cell_px(cw, ch);
+        self.term.prune_images();
         if let Some(pty) = &self.pty {
             pty.resize(rows as u16, cols as u16, cw as u16, ch as u16);
         }

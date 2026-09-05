@@ -166,6 +166,9 @@ pub struct Grid {
     pub cols: usize,
     /// How far the viewport is scrolled back, in lines above the live screen.
     pub view_offset: usize,
+    /// Total lines ever scrolled off the top. Screen row `r` is absolute line
+    /// `scrolled + r`, which is how images stay pinned to their text.
+    pub scrolled: u64,
 }
 
 impl Grid {
@@ -178,6 +181,7 @@ impl Grid {
             rows,
             cols,
             view_offset: 0,
+            scrolled: 0,
         }
     }
 
@@ -196,6 +200,9 @@ impl Grid {
             return;
         }
         let to_scrollback = !self.in_alt() && top == 0 && bot == self.rows;
+        if to_scrollback {
+            self.scrolled += n as u64;
+        }
         for _ in 0..n {
             let mut row = self.screen.rows.remove(top);
             if to_scrollback && self.max_scrollback > 0 {
