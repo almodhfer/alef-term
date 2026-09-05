@@ -39,8 +39,20 @@ true, and copying text gives back what the program actually emitted.
    cell boundaries, لا becomes one ligature, and diacritics get their proper
    GPOS anchors. Runs are split by font, **never by colour** — a colour change
    in the middle of a word must not break the joining.
-5. **Place.** Glyphs are laid out with the font's own advances inside the
-   columns their word occupies, anchored at the word's leading edge.
+5. **Place.** Cursive Arabic is placed as one piece, with the font's own
+   advances, inside the columns its word occupies. Everything else is snapped
+   to its cell — `cell_w` is a whole number of pixels but a glyph advance is
+   not, so a long Latin run laid out by advances drifts about a third of a pixel
+   per character and collides within one status bar's width. Snapping is safe
+   there precisely because Latin has no joins to protect.
+
+**Pre-shaped Arabic is undone on the way in.** Editors that predate shaping
+terminals convert Arabic to Arabic Presentation Forms before writing it out —
+vim and neovim do this by default, via `'arabicshape'`. Those codepoints are
+frozen letter shapes, so passing them to a real shaper yields disconnected
+letters. Each one that maps back to a single base letter is restored, letting
+the shaper join properly; multi-character ligature forms are left alone, since
+they are already one correct glyph in one cell.
 
 ### Two decisions worth explaining
 
@@ -118,9 +130,14 @@ propagated to the child via `TIOCSWINSZ`.
 cargo test
 ```
 
-34 tests: VT/grid behaviour, the Arabic layout itself (reordering, ligatures,
-diacritics, mirroring, column pinning), and an end-to-end test that runs a real
-shell on a PTY and checks its output — including Arabic — reaches the grid.
+39 tests: VT/grid behaviour, the Arabic layout itself (reordering, ligatures,
+diacritics, mirroring, column pinning, cell-grid alignment), and end-to-end
+tests that run a real shell — and a real editor — on a PTY and check the output
+reaches the grid correctly.
+
+`cargo run --release --example tui_probe -- /bin/sh "htop\n<<PAUSE>>"` drives a
+full-screen program through the terminal and dumps both the grid and a render,
+which is how the editor and htop cases above were verified.
 
 `cargo run --release --example render_test` renders a showcase screen to a file
 without opening a window, which is handy for eyeballing layout changes.

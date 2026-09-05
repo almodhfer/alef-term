@@ -340,6 +340,42 @@ fn parse_color_semicolon<'a>(iter: &mut vte::ParamsIter<'a>) -> Option<Color> {
     }
 }
 
+/// Undo pre-shaped Arabic.
+///
+/// Editors that predate shaping terminals — vim and neovim do this by default,
+/// via `'arabicshape'` — convert Arabic to Arabic Presentation Forms before
+/// writing it out, because they assume the terminal cannot join letters itself.
+/// Those codepoints are frozen isolated/initial/medial/final shapes, so feeding
+/// them to a real shaper produces disconnected letters: exactly the breakage
+/// this terminal exists to avoid.
+///
+/// Mapping each one back to its base letter lets the shaper do the joining
+/// properly, and makes copied text ordinary Arabic rather than presentation
+/// forms, which Unicode discourages for interchange.
+///
+/// Forms that decompose to *several* characters are ligatures — lam-alef and
+/// friends. Those are left alone: they are already a single correct glyph
+/// sitting in a single cell, and expanding them would need more cells than the
+/// program reserved.
+#[inline]
+fn unshape_presentation_form(c: char) -> char {
+    if !matches!(c as u32, 0xFB50..=0xFDFF | 0xFE70..=0xFEFF) {
+        return c;
+    }
+    let mut out = None;
+    let mut count = 0usize;
+    unicode_normalization::char::decompose_compatible(c, |d| {
+        count += 1;
+        if count == 1 {
+            out = Some(d);
+        }
+    });
+    match out {
+        Some(base) if count == 1 => base,
+        _ => c,
+    }
+}
+
 /// Map ASCII to the DEC special graphics set (box drawing) when ESC ( 0 is active.
 fn dec_graphic(c: char) -> char {
     match c {
@@ -358,6 +394,7 @@ impl Perform for Terminal {
     fn print(&mut self, c: char) {
         self.damaged = true;
         let c = if self.dec_graphics { dec_graphic(c) } else { c };
+        let c = unshape_presentation_form(c);
         let width = c.width().unwrap_or(0);
 
         // Zero-width: a combining mark belongs to the cell already written.

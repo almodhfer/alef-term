@@ -180,3 +180,23 @@ fn resize_preserves_content_and_pulls_from_scrollback() {
     assert_eq!(line(&t, 0), "one", "growing pulls the retired line back");
     assert_eq!(line(&t, 2), "three");
 }
+
+#[test]
+fn pre_shaped_arabic_is_restored_to_base_letters() {
+    // vim/neovim pre-shape Arabic into presentation forms by default. Storing
+    // those verbatim leaves the shaper nothing to join, so they are mapped back.
+    // U+FEE9 HEH ISOLATED, U+FEDF LAM INITIAL, U+FE8E ALEF FINAL.
+    let t = run(2, 20, "\u{FEDF}\u{FE8E}\u{FEE9}");
+    assert_eq!(line(&t, 0), "لاه");
+    assert_eq!(t.grid.screen.cursor.col, 3, "still one cell per letter");
+}
+
+#[test]
+fn presentation_form_ligatures_are_left_intact() {
+    // U+FEFB LAM WITH ALEF ISOLATED decomposes to two characters. Expanding it
+    // would need a cell the writing program never reserved, so it stays as the
+    // single glyph it already is.
+    let t = run(2, 20, "\u{FEFB}");
+    assert_eq!(line(&t, 0), "\u{FEFB}");
+    assert_eq!(t.grid.screen.cursor.col, 1);
+}

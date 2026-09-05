@@ -205,3 +205,41 @@ fn glyphs_stay_within_the_row_bounds() {
         assert!(g.x <= width, "glyph starts past the row end: {} > {width}", g.x);
     }
 }
+
+#[test]
+fn long_latin_runs_stay_on_the_cell_grid() {
+    // `cell_w` is rounded to a whole pixel, so laying a long run out with the
+    // font's own advances drifts a fraction of a pixel per character. Across an
+    // 80-column status bar that accumulates to a whole cell and characters
+    // collide, so non-cursive text is snapped to its cell.
+    let cols = 80;
+    let text = "F1Help  F2Setup F3SearchF4FilterF5Tree  F6SortByF7Nice -F8Nice +F9Kill  F10Quit";
+    let (l, _t) = layout(text, cols, BidiMode::ForceLtr);
+    let fonts = Fonts::new(16.0, None).unwrap();
+    assert!(!l.glyphs.is_empty());
+    for g in &l.glyphs {
+        let want = l.column_of(g.cell) as f32 * fonts.cell_w;
+        assert!(
+            (g.x - want).abs() <= fonts.cell_w * 0.5,
+            "glyph for cell {} drifted off its column: x={:.2} want~{:.2}",
+            g.cell,
+            g.x,
+            want
+        );
+    }
+}
+
+#[test]
+fn arabic_is_not_snapped_so_letters_can_join() {
+    // The converse of the rule above: snapping each Arabic letter to its own
+    // cell is what tears cursive joins apart, so a word is placed as one piece
+    // and its glyphs sit closer together than the cell pitch.
+    let cols = 24;
+    let (l, _t) = layout("بالعالم", cols, BidiMode::ForceLtr);
+    let fonts = Fonts::new(16.0, None).unwrap();
+    let mut xs: Vec<f32> = l.glyphs.iter().map(|g| g.x).collect();
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert!(xs.len() >= 4, "expected several glyphs, got {}", xs.len());
+    let tight = xs.windows(2).any(|w| w[1] - w[0] < fonts.cell_w * 0.9);
+    assert!(tight, "Arabic glyphs are on the cell pitch; joins would be broken");
+}

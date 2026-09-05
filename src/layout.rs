@@ -346,13 +346,15 @@ impl Layouter {
             groups.reverse();
         }
 
+        let cell_w = fonts.cell_w;
+
         // Column span of each group, so it can be anchored independently.
         let mut spans: Vec<(f32, f32)> = Vec::new();
         {
             let mut x = box_x;
             for g in &groups {
                 let w = g.items.iter().map(|&i| self.items[i].columns).sum::<usize>() as f32
-                    * fonts.cell_w;
+                    * cell_w;
                 spans.push((x, w));
                 x += w;
             }
@@ -403,12 +405,61 @@ impl Layouter {
 
             let (span_x, span_w) = spans[gi];
 
-            // If the group's ink is wider than the columns it owns, shrink it
-            // *isotropically* to fit. Squeezing only the x axis would distort
-            // the letterforms and tear the joins; scaling uniformly keeps the
-            // word's shape and just sets it slightly smaller. Letting it
-            // overhang instead is not an option between words — the neighbour's
-            // ink would start before this one ends and swallow the space.
+            // Non-cursive scripts are snapped to the grid, one cluster per
+            // cell. This is not optional: `cell_w` is rounded to a whole pixel
+            // (Menlo advances 9.64px into a 10px cell), so laying a long Latin
+            // run out with the font's own advances drifts about a third of a
+            // pixel per character — nearly a full cell across an 80-column
+            // status bar, which makes characters collide.
+            //
+            // Arabic is exempt because snapping is exactly what tears cursive
+            // joins apart: a word has to be placed as one piece.
+            let cursive = g.slot == Slot::Arabic;
+            if !cursive {
+                let mut i = 0usize;
+                while i < infos.len() {
+                    let cl = infos[i].cluster;
+                    let mut j = i;
+                    let mut adv = 0.0f32;
+                    while j < infos.len() && infos[j].cluster == cl {
+                        adv += poss[j].x_advance as f32 * scale;
+                        j += 1;
+                    }
+                    let item = self.items.get(cl as usize).unwrap_or(&self.items[g.items[0]]);
+                    let cell = &row.cells[item.cell];
+                    let col = out.cell_to_column.get(item.cell).copied().unwrap_or(item.cell);
+                    let cell_span = item.columns as f32 * cell_w;
+                    // Centre the cluster in its cell so the rounding slack is
+                    // split evenly rather than pushed to one side.
+                    let mut pen = col as f32 * cell_w + (cell_span - adv) * 0.5;
+                    for k in i..j {
+                        let inkless = item.ch == ' ' && item.marks.is_empty();
+                        if !inkless && !crate::boxdraw::is_procedural(item.ch) {
+                            out.glyphs.push(PositionedGlyph {
+                                font,
+                                glyph: infos[k].glyph_id as u16,
+                                x: pen + poss[k].x_offset as f32 * scale,
+                                y: poss[k].y_offset as f32 * scale,
+                                px,
+                                fg: cell.fg,
+                                attrs: cell.attrs,
+                                cell: item.cell,
+                            });
+                        }
+                        pen += poss[k].x_advance as f32 * scale;
+                    }
+                    i = j;
+                }
+                self.buf = Some(shaped.clear());
+                continue;
+            }
+
+            // If a cursive group's ink is wider than the columns it owns,
+            // shrink it *isotropically* to fit. Squeezing only the x axis would
+            // distort the letterforms and tear the joins; scaling uniformly
+            // keeps the word's shape and just sets it slightly smaller. Letting
+            // it overhang is not an option between words — the neighbour's ink
+            // would start before this one ends and swallow the space.
             let (scale, px, natural) = if natural > span_w && natural > 0.0 {
                 let k = span_w / natural;
                 (scale * k, px * k, span_w)

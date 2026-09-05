@@ -97,3 +97,40 @@ fn resize_is_reported_to_the_child() {
     assert!(ok, "child never saw the new size; screen was:\n{}", screen(&term));
     pty.kill();
 }
+
+/// Editors that predate shaping terminals write Arabic out as presentation
+/// forms. Check a real editor's output arrives as ordinary Arabic letters, so
+/// the shaper has something it can actually join.
+#[test]
+fn editor_pre_shaped_arabic_arrives_as_base_letters() {
+    let Some(nvim) = ["/opt/homebrew/bin/nvim", "/usr/local/bin/nvim", "/usr/bin/vim"]
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
+    else {
+        eprintln!("no vim/nvim available; skipping");
+        return;
+    };
+
+    let dir = std::env::temp_dir().join("arabic-term-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("ar.txt");
+    std::fs::write(&file, "مرحبا بالعالم\n").unwrap();
+
+    let mut term = Terminal::new(24, 80, 100);
+    let mut vt = Vt::new();
+    let mut pty = Pty::spawn(Some("/bin/sh"), 24, 80, 8, 16, || {}).expect("spawn pty");
+    pty.write(format!("{nvim} -u NONE {}\n", file.display()).as_bytes());
+
+    let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(20), |t| {
+        t.grid.in_alt() && screen(t).contains("مرحبا")
+    });
+    pty.write(b"\x1b:q!\n");
+    pty.kill();
+
+    assert!(ok, "editor output never arrived as base letters; screen was:\n{}", screen(&term));
+    // And explicitly: no Arabic Presentation Forms survived into the grid.
+    let has_forms = screen(&term)
+        .chars()
+        .any(|c| matches!(c as u32, 0xFB50..=0xFDFF | 0xFE70..=0xFEFF));
+    assert!(!has_forms, "presentation forms reached the grid:\n{}", screen(&term));
+}
