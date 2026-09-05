@@ -138,6 +138,7 @@ dependencies = [
  "fontdb",
  "libc",
  "log",
+ "png",
  "portable-pty",
  "rustybuzz",
  "softbuffer",

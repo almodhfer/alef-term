@@ -78,6 +78,8 @@ pub struct Terminal {
     /// Images placed by sixel, pinned to the absolute line they were drawn on
     /// so they scroll with their text.
     pub images: Vec<Placed>,
+    /// Kitty graphics protocol state.
+    graphics: crate::kitty_graphics::Decoder,
     /// Buffer for the DCS payload currently being collected.
     dcs: Vec<u8>,
     /// True while the collected DCS is a sixel sequence we intend to decode.
@@ -109,6 +111,7 @@ impl Terminal {
             replies: Vec::new(),
             damaged: true,
             images: Vec::new(),
+            graphics: Default::default(),
             dcs: Vec::new(),
             dcs_is_sixel: false,
             kitty_keyboard: Vec::new(),
@@ -125,6 +128,21 @@ impl Terminal {
     #[inline]
     pub fn kitty_flags(&self) -> u8 {
         self.kitty_keyboard.last().copied().unwrap_or(0)
+    }
+
+    /// Handle an APC payload — currently only the kitty graphics protocol.
+    pub fn handle_apc(&mut self, payload: &[u8]) {
+        match self.graphics.feed(payload) {
+            crate::kitty_graphics::Command::Display(img) => self.place_image(img),
+            crate::kitty_graphics::Command::Delete(id) => {
+                match id {
+                    Some(_) => {}
+                    None => self.images.clear(),
+                }
+                self.damaged = true;
+            }
+            crate::kitty_graphics::Command::None => {}
+        }
     }
 
     /// Place a decoded image at the cursor and advance past it.
@@ -1009,16 +1027,104 @@ fn parse_xcolor(spec: &[u8]) -> Option<Rgb> {
 }
 
 /// Feed PTY bytes through the parser into terminal state.
+///
+/// APC sequences (`ESC _ ... ESC \`) are pulled out of the stream first: vte
+/// recognises the state but discards the payload without a callback, and the
+/// kitty graphics protocol lives there.
 pub struct Vt {
     parser: vte::Parser,
+    /// Partial APC payload carried across a chunk boundary.
+    apc: Vec<u8>,
+    in_apc: bool,
+    /// Trailing ESC held back in case it begins an APC introducer.
+    held_esc: bool,
 }
 
 impl Vt {
     pub fn new() -> Self {
-        Vt { parser: vte::Parser::new() }
+        Vt { parser: vte::Parser::new(), apc: Vec::new(), in_apc: false, held_esc: false }
     }
+
     pub fn feed(&mut self, term: &mut Terminal, bytes: &[u8]) {
-        self.parser.advance(term, bytes);
+        let mut rest = bytes;
+        // A held ESC from the previous chunk: decide now what it introduced.
+        if self.held_esc {
+            self.held_esc = false;
+            match rest.first() {
+                Some(b'_') => {
+                    self.in_apc = true;
+                    self.apc.clear();
+                    rest = &rest[1..];
+                }
+                _ => self.parser.advance(term, b"\x1b"),
+            }
+        }
+
+        while !rest.is_empty() {
+            if self.in_apc {
+                // Collect until ESC \ (or a bare BEL, which some emitters use).
+                match rest.iter().position(|&b| b == 0x1b || b == 0x07) {
+                    Some(i) => {
+                        self.push_apc(&rest[..i]);
+                        if rest[i] == 0x07 {
+                            rest = &rest[i + 1..];
+                        } else if i + 1 < rest.len() {
+                            rest = &rest[i + 2..]; // skip ESC and the following byte
+                        } else {
+                            // ESC at the very end of the chunk: treat it as the
+                            // terminator rather than stalling the image until
+                            // more bytes happen to arrive.
+                            self.finish_apc(term);
+                            break;
+                        }
+                        self.finish_apc(term);
+                    }
+                    None => {
+                        self.push_apc(rest);
+                        break;
+                    }
+                }
+                continue;
+            }
+
+            match rest.iter().position(|&b| b == 0x1b) {
+                Some(i) => {
+                    self.parser.advance(term, &rest[..i]);
+                    match rest.get(i + 1) {
+                        Some(b'_') => {
+                            self.in_apc = true;
+                            self.apc.clear();
+                            rest = &rest[i + 2..];
+                        }
+                        Some(_) => {
+                            self.parser.advance(term, &rest[i..i + 2]);
+                            rest = &rest[i + 2..];
+                        }
+                        None => {
+                            // Hold the ESC; the next chunk decides.
+                            self.held_esc = true;
+                            break;
+                        }
+                    }
+                }
+                None => {
+                    self.parser.advance(term, rest);
+                    break;
+                }
+            }
+        }
+    }
+
+    fn push_apc(&mut self, bytes: &[u8]) {
+        if self.apc.len() + bytes.len() <= 32 << 20 {
+            self.apc.extend_from_slice(bytes);
+        }
+    }
+
+    fn finish_apc(&mut self, term: &mut Terminal) {
+        self.in_apc = false;
+        let payload = std::mem::take(&mut self.apc);
+        term.handle_apc(&payload);
     }
 }
 

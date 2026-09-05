@@ -128,8 +128,6 @@ render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 - **Built and tested on macOS.** Fonts are found through the platform font
   database, so the stack is not macOS-specific, but nothing else has been run on
   Linux or Windows and the clipboard is whatever `arboard` provides.
-- **No kitty graphics protocol.** Sixel is supported; kitty's newer image
-  protocol is not.
 - **Little hands-on interactive use.** Everything is covered by tests or by
   driving real programs over a PTY, but the window itself has had few hours of
   real use; IME-based Arabic input is the least exercised path.
@@ -143,11 +141,12 @@ autowrap with deferred wrap at the margin, wide (CJK) characters with spacers,
 combining marks, DEC line-drawing charset, mouse reporting (normal and SGR),
 bracketed paste, focus events, window title (OSC 0/2), palette changes (OSC 4),
 hyperlinks (OSC 8), clipboard writes (OSC 52), device status reports, the kitty
-keyboard protocol's disambiguation flag, sixel images, selection and clipboard,
-and resize propagated to the child via `TIOCSWINSZ`.
+keyboard protocol's disambiguation flag, images via both sixel and the kitty
+graphics protocol, selection and clipboard, and resize propagated to the child
+via `TIOCSWINSZ`.
 
-Sixel images are pinned to the line they were drawn on, so they scroll with
-their text:
+Images — sixel, or the kitty graphics protocol — are pinned to the line they
+were drawn on, so they scroll with their text:
 
 ![sixel](docs/sixel.png)
 
@@ -157,10 +156,11 @@ their text:
 cargo test
 ```
 
-96 tests, covering: VT and grid behaviour; font coverage and fallback; the
+104 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
-including the kitty protocol; selection and copy; sixel decoding; and end-to-end
+including the kitty protocol; selection and copy; sixel and kitty graphics
+decoding; and end-to-end
 tests that drive a real shell — and a real editor — over a PTY, typing Arabic
 through the key encoder and interrupting a running command with Ctrl+C.
 
@@ -186,6 +186,7 @@ Retina resolution renders in about 3 ms, re-laying out every row every frame.
 | `src/keys.rs` | key presses to terminal byte sequences |
 | `src/selection.rs` | selection and copy |
 | `src/sixel.rs` | sixel image decoding |
+| `src/kitty_graphics.rs` | kitty graphics protocol |
 | `src/pty.rs` | PTY and the shell process |
 | `src/app.rs` | window, input, event loop |
 
