@@ -113,6 +113,17 @@ system clipboard).
 | `Cmd C` / `Cmd V` | copy / paste |
 | scroll wheel | scrollback (arrow keys on the alt screen) |
 
+## Known limitations
+
+- **macOS only.** Font paths (Menlo, Geeza Pro) are hardcoded, and the clipboard
+  is the system one.
+- **Shaping does not cross a soft wrap.** A word broken across two display rows
+  is shaped as two pieces, so the letters at the break do not join.
+- **Not yet exercised interactively at length.** Everything below is covered by
+  tests or by driving real programs over a PTY, but the window has had little
+  hands-on use; mouse selection and IME-based Arabic input in particular are
+  implemented but only lightly tested.
+
 ## What's implemented
 
 Colours (16 / 256 / truecolour, both `;` and `:` SGR forms), bold/dim/italic/
@@ -130,10 +141,11 @@ propagated to the child via `TIOCSWINSZ`.
 cargo test
 ```
 
-39 tests: VT/grid behaviour, the Arabic layout itself (reordering, ligatures,
-diacritics, mirroring, column pinning, cell-grid alignment), and end-to-end
-tests that run a real shell — and a real editor — on a PTY and check the output
-reaches the grid correctly.
+50 tests: VT/grid behaviour, the Arabic layout itself (reordering, ligatures,
+diacritics, mirroring, column pinning, cell-grid alignment), key encoding, and
+end-to-end tests that drive a real shell — and a real editor — over a PTY,
+including typing Arabic through the key encoder and interrupting a running
+command with Ctrl+C.
 
 `cargo run --release --example tui_probe -- /bin/sh "htop\n<<PAUSE>>"` drives a
 full-screen program through the terminal and dumps both the grid and a render,
@@ -154,6 +166,7 @@ Retina resolution renders in about 3 ms, re-laying out every row every frame.
 | `src/render.rs` | software rasterisation and blending |
 | `src/font.rs` | font loading, script fallback, glyph cache |
 | `src/boxdraw.rs` | procedural box-drawing glyphs |
+| `src/keys.rs` | key presses to terminal byte sequences |
 | `src/pty.rs` | PTY and the shell process |
 | `src/app.rs` | window, input, event loop |
 

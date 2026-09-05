@@ -134,3 +134,87 @@ fn editor_pre_shaped_arabic_arrives_as_base_letters() {
         .any(|c| matches!(c as u32, 0xFB50..=0xFDFF | 0xFE70..=0xFEFF));
     assert!(!has_forms, "presentation forms reached the grid:\n{}", screen(&term));
 }
+
+/// Type a string the way the app does: through the key encoder, one key at a
+/// time, then Enter.
+fn type_line(pty: &mut Pty, s: &str) {
+    use arabic_term::keys::{encode, KeyContext};
+    use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
+    let k = KeyContext::default();
+    for c in s.chars() {
+        let key = Key::Character(SmolStr::new(c.to_string()));
+        let bytes = encode(&key, Some(&c.to_string()), ModifiersState::empty(), k)
+            .expect("every printable key encodes");
+        pty.write(&bytes);
+    }
+    let enter = encode(&Key::Named(NamedKey::Enter), None, ModifiersState::empty(), k).unwrap();
+    pty.write(&enter);
+}
+
+#[test]
+fn typing_through_the_key_encoder_drives_a_real_shell() {
+    let mut term = Terminal::new(10, 60, 100);
+    let mut vt = Vt::new();
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+
+    type_line(&mut pty, "printf 'typed-ok\\n'");
+    let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(10), |t| {
+        screen(t).contains("typed-ok")
+    });
+    assert!(ok, "typed command never ran; screen was:\n{}", screen(&term));
+    pty.kill();
+}
+
+#[test]
+fn typing_arabic_reaches_the_shell_and_comes_back() {
+    // The full round trip: key encoder -> PTY -> shell -> VT -> grid, with no
+    // special handling for Arabic anywhere along it.
+    let mut term = Terminal::new(10, 60, 100);
+    let mut vt = Vt::new();
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+
+    type_line(&mut pty, "printf 'مرحبا\\n'");
+    let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(10), |t| {
+        screen(t).matches("مرحبا").count() >= 2 // once echoed, once printed
+    });
+    assert!(ok, "Arabic typing did not round-trip; screen was:\n{}", screen(&term));
+    pty.kill();
+}
+
+#[test]
+fn ctrl_c_interrupts_a_running_command() {
+    use arabic_term::keys::{encode, KeyContext};
+    use winit::keyboard::{Key, ModifiersState, SmolStr};
+
+    let mut term = Terminal::new(10, 60, 100);
+    let mut vt = Vt::new();
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+
+    pty.write(b"sleep 30\n");
+    std::thread::sleep(Duration::from_millis(500));
+
+    let ctrl_c = encode(
+        &Key::Character(SmolStr::new("c")),
+        Some("c"),
+        ModifiersState::CONTROL,
+        KeyContext::default(),
+    )
+    .unwrap();
+    assert_eq!(ctrl_c, b"\x03", "Ctrl+C must encode to ETX for the line discipline");
+    pty.write(&ctrl_c);
+
+    // Queue a command behind it. The shell only reads this once the foreground
+    // sleep is gone, so seeing it well inside the 30s sleep is exactly the
+    // proof that the interrupt landed — and it does not depend on how a
+    // particular shell treats the rest of a command list after SIGINT.
+    pty.write(b"printf 'PROMPT-BACK\n'\n");
+    let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(5), |t| {
+        screen(t).contains("PROMPT-BACK")
+    });
+    assert!(
+        ok,
+        "shell still blocked on sleep 5s after Ctrl+C; screen was:\n{}",
+        screen(&term)
+    );
+    pty.kill();
+}

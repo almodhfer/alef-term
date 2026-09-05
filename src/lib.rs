@@ -10,6 +10,7 @@ pub mod boxdraw;
 pub mod color;
 pub mod font;
 pub mod grid;
+pub mod keys;
 pub mod layout;
 pub mod pty;
 pub mod render;
