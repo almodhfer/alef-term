@@ -3,7 +3,8 @@
 use crate::color::Palette;
 use crate::font::Fonts;
 use crate::pty::{Pty, PtyEvent};
-use crate::render::{Canvas, Renderer, Selection};
+use crate::render::{Canvas, Renderer};
+use crate::selection::{selected_text, Selection};
 use crate::term::{BidiMode, Modes, Terminal, Vt};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -173,7 +174,10 @@ impl App {
             key,
             text,
             self.modifiers,
-            crate::keys::KeyContext { app_cursor: self.term.modes.contains(Modes::APP_CURSOR) },
+            crate::keys::KeyContext {
+                app_cursor: self.term.modes.contains(Modes::APP_CURSOR),
+                kitty_flags: self.term.kitty_flags(),
+            },
         )
     }
 
@@ -191,32 +195,6 @@ impl App {
             None => col,
         };
         (row, cell)
-    }
-
-    fn selected_text(&self) -> String {
-        let Some(sel) = self.selection else { return String::new() };
-        let mut out = String::new();
-        for r in 0..self.term.grid.rows {
-            let row = self.term.grid.viewport_row(r);
-            let mut line = String::new();
-            for (i, cell) in row.cells.iter().enumerate() {
-                if sel.contains(r, i) && !cell.attrs.contains(crate::grid::Attrs::WIDE_SPACER) {
-                    line.push(cell.ch);
-                    for m in cell.marks() {
-                        line.push(*m);
-                    }
-                }
-            }
-            if line.is_empty() && !sel.contains(r, 0) {
-                continue;
-            }
-            // Copy yields logical order — that is what a shell expects back.
-            out.push_str(line.trim_end());
-            if !row.wrapped {
-                out.push('\n');
-            }
-        }
-        out.trim_end_matches('\n').to_string()
     }
 
     fn paste(&mut self, text: &str) {
@@ -359,7 +337,7 @@ impl ApplicationHandler<Wake> for App {
                     if let Key::Character(c) = &event.logical_key {
                         match c.as_str() {
                             "c" => {
-                                let t = self.selected_text();
+                                let t = self.selection.map(|s| selected_text(&self.term, s)).unwrap_or_default();
                                 if !t.is_empty() {
                                     if let Some(cb) = &mut self.clipboard {
                                         let _ = cb.set_text(t);
@@ -438,7 +416,7 @@ impl ApplicationHandler<Wake> for App {
                     }
                     (MouseButton::Left, ElementState::Released) => {
                         self.selecting = false;
-                        let t = self.selected_text();
+                        let t = self.selection.map(|s| selected_text(&self.term, s)).unwrap_or_default();
                         if !t.is_empty() {
                             if let Some(cb) = &mut self.clipboard {
                                 let _ = cb.set_text(t);

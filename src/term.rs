@@ -64,6 +64,10 @@ pub struct Terminal {
     pub replies: Vec<u8>,
     /// Set whenever the visible content changed and a redraw is needed.
     pub damaged: bool,
+    /// Kitty keyboard protocol flag stack. Applications push a set of flags
+    /// while they want richer key reporting and pop it on exit, so nesting
+    /// (an editor inside a multiplexer) restores the outer program's mode.
+    kitty_keyboard: Vec<u8>,
     /// Text an application asked to place on the clipboard via OSC 52. The UI
     /// drains this; reads are refused, see `osc_dispatch`.
     pub clipboard_write: Option<String>,
@@ -84,12 +88,19 @@ impl Terminal {
             title: String::from("arabic-term"),
             replies: Vec::new(),
             damaged: true,
+            kitty_keyboard: Vec::new(),
             clipboard_write: None,
             link: None,
             dec_graphics: false,
             tab_stops: default_tabs(cols),
             palette_overrides: Vec::new(),
         }
+    }
+
+    /// Currently active kitty keyboard flags, 0 when the protocol is off.
+    #[inline]
+    pub fn kitty_flags(&self) -> u8 {
+        self.kitty_keyboard.last().copied().unwrap_or(0)
     }
 
     pub fn take_palette_overrides(&mut self) -> Vec<(u8, Rgb)> {
@@ -800,7 +811,41 @@ impl Perform for Terminal {
                 }
             }
             's' => self.grid.screen.saved_cursor = self.grid.screen.cursor,
-            'u' => self.grid.screen.cursor = self.grid.screen.saved_cursor,
+            'u' => match intermediates.first() {
+                // Kitty keyboard protocol. Plain `CSI u` is still restore-cursor.
+                Some(b'?') => {
+                    let f = self.kitty_flags();
+                    self.replies.extend_from_slice(format!("\x1b[?{f}u").as_bytes());
+                }
+                Some(b'>') => {
+                    // Push flags; bound the stack so a hostile stream cannot
+                    // grow it without limit.
+                    if self.kitty_keyboard.len() < 32 {
+                        self.kitty_keyboard.push((arg(0) & 0xff) as u8);
+                    }
+                }
+                Some(b'<') => {
+                    for _ in 0..arg1(0) {
+                        self.kitty_keyboard.pop();
+                    }
+                }
+                Some(b'=') => {
+                    let flags = (arg(0) & 0xff) as u8;
+                    let mode = if params.iter().count() > 1 { arg(1) } else { 1 };
+                    let cur = self.kitty_flags();
+                    let next = match mode {
+                        2 => cur | flags,  // set given bits
+                        3 => cur & !flags, // clear given bits
+                        _ => flags,        // replace
+                    };
+                    if self.kitty_keyboard.is_empty() {
+                        self.kitty_keyboard.push(next);
+                    } else {
+                        *self.kitty_keyboard.last_mut().unwrap() = next;
+                    }
+                }
+                _ => self.grid.screen.cursor = self.grid.screen.saved_cursor,
+            },
             _ => {}
         }
     }

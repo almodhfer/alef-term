@@ -229,3 +229,90 @@ fn osc_52_ignores_malformed_base64() {
     let t = run(2, 20, "\x1b]52;c;!!!not base64!!!\x07");
     assert_eq!(t.clipboard_write, None);
 }
+
+#[test]
+fn kitty_keyboard_flags_push_and_pop() {
+    // Nesting matters: an editor inside a multiplexer pushes its flags and pops
+    // them on exit, and the outer program's mode must come back.
+    let mut t = Terminal::new(3, 20, 10);
+    let mut vt = Vt::new();
+    assert_eq!(t.kitty_flags(), 0);
+    vt.feed(&mut t, b"\x1b[>1u");
+    assert_eq!(t.kitty_flags(), 1);
+    vt.feed(&mut t, b"\x1b[>5u");
+    assert_eq!(t.kitty_flags(), 5);
+    vt.feed(&mut t, b"\x1b[<u");
+    assert_eq!(t.kitty_flags(), 1, "popping restores the outer mode");
+    vt.feed(&mut t, b"\x1b[<u");
+    assert_eq!(t.kitty_flags(), 0);
+}
+
+#[test]
+fn kitty_keyboard_query_is_answered() {
+    let mut t = Terminal::new(3, 20, 10);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1b[>3u\x1b[?u");
+    assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?3u");
+}
+
+#[test]
+fn kitty_keyboard_set_modes_or_and_clear() {
+    let mut t = Terminal::new(3, 20, 10);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1b[=1;1u"); // replace with 1
+    assert_eq!(t.kitty_flags(), 1);
+    vt.feed(&mut t, b"\x1b[=4;2u"); // set bit 4
+    assert_eq!(t.kitty_flags(), 5);
+    vt.feed(&mut t, b"\x1b[=1;3u"); // clear bit 1
+    assert_eq!(t.kitty_flags(), 4);
+}
+
+#[test]
+fn plain_csi_u_still_restores_the_cursor() {
+    // The kitty sequences are all introduced by an intermediate; bare CSI u
+    // must keep its original meaning.
+    let t = run(3, 20, "\x1b[2;5H\x1b[s\x1b[1;1H\x1b[u");
+    assert_eq!(t.grid.screen.cursor.row, 1);
+    assert_eq!(t.grid.screen.cursor.col, 4);
+}
+
+#[test]
+fn resizing_while_on_the_alt_screen_keeps_both_buffers_sane() {
+    // A multiplexer or editor lives on the alt screen; resizing under it must
+    // not corrupt either buffer or leave the cursor out of bounds.
+    let mut t = Terminal::new(10, 40, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"primary content\r\nsecond line");
+    vt.feed(&mut t, b"\x1b[?1049h");
+    vt.feed(&mut t, b"\x1b[9;30Halt screen bottom");
+
+    t.resize(5, 20);
+    assert_eq!(t.grid.rows, 5);
+    assert_eq!(t.grid.cols, 20);
+    assert!(t.grid.screen.cursor.row < 5, "cursor row clamped into the new size");
+    assert!(t.grid.screen.cursor.col < 20, "cursor col clamped into the new size");
+    for r in &t.grid.screen.rows {
+        assert_eq!(r.cells.len(), 20, "every row resized");
+    }
+
+    t.resize(12, 60);
+    vt.feed(&mut t, b"\x1b[?1049l");
+    assert_eq!(t.grid.rows, 12);
+    for r in &t.grid.screen.rows {
+        assert_eq!(r.cells.len(), 60);
+    }
+    assert_eq!(line(&t, 0), "primary content", "primary buffer survived");
+}
+
+#[test]
+fn scroll_region_is_clamped_when_the_screen_shrinks() {
+    let mut t = Terminal::new(20, 40, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1b[5;18r");
+    t.resize(8, 40);
+    assert!(t.grid.screen.scroll_bot <= 8);
+    assert!(t.grid.screen.scroll_top < t.grid.screen.scroll_bot);
+    // And the terminal still works afterwards.
+    vt.feed(&mut t, b"\x1b[1;1Hafter resize");
+    assert_eq!(line(&t, 0), "after resize");
+}

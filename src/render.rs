@@ -4,6 +4,7 @@ use crate::color::{Color, Palette, Rgb};
 use crate::font::Fonts;
 use crate::grid::Attrs;
 use crate::layout::{Layouter, RowLayout};
+use crate::selection::Selection;
 use crate::term::Terminal;
 
 pub struct Canvas<'a> {
@@ -99,45 +100,6 @@ impl<'a> Canvas<'a> {
                 *d = (r.min(255) << 16) | (g.min(255) << 8) | b.min(255);
             }
         }
-    }
-}
-
-/// An inclusive-start, exclusive-end selection over logical grid positions.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Selection {
-    pub start: (usize, usize),
-    pub end: (usize, usize),
-    pub block: bool,
-}
-
-impl Selection {
-    fn normalized(&self) -> ((usize, usize), (usize, usize)) {
-        if self.start <= self.end {
-            (self.start, self.end)
-        } else {
-            (self.end, self.start)
-        }
-    }
-
-    pub fn contains(&self, row: usize, cell: usize) -> bool {
-        let (a, b) = self.normalized();
-        if self.block {
-            let (c0, c1) = if a.1 <= b.1 { (a.1, b.1) } else { (b.1, a.1) };
-            return row >= a.0 && row <= b.0 && cell >= c0 && cell <= c1;
-        }
-        if row < a.0 || row > b.0 {
-            return false;
-        }
-        if a.0 == b.0 {
-            return cell >= a.1 && cell <= b.1;
-        }
-        if row == a.0 {
-            return cell >= a.1;
-        }
-        if row == b.0 {
-            return cell <= b.1;
-        }
-        true
     }
 }
 

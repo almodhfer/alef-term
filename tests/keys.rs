@@ -52,8 +52,8 @@ fn alt_prefixes_escape_as_meta() {
 
 #[test]
 fn arrows_follow_the_cursor_key_mode() {
-    let normal = KeyContext { app_cursor: false };
-    let app = KeyContext { app_cursor: true };
+    let normal = KeyContext { app_cursor: false, ..Default::default() };
+    let app = KeyContext { app_cursor: true, ..Default::default() };
     let up = Key::Named(NamedKey::ArrowUp);
     let e = ModifiersState::empty();
     assert_eq!(encode(&up, None, e, normal).unwrap(), b"\x1b[A");
@@ -100,8 +100,50 @@ fn f1_to_f4_use_ss3_regardless_of_cursor_key_mode() {
     // arrows and Home/End switch. Getting this wrong misfires F-keys in htop.
     let e = ModifiersState::empty();
     for app_cursor in [false, true] {
-        let k = KeyContext { app_cursor };
+        let k = KeyContext { app_cursor, ..Default::default() };
         assert_eq!(encode(&Key::Named(NamedKey::F1), None, e, k).unwrap(), b"\x1bOP");
         assert_eq!(encode(&Key::Named(NamedKey::F4), None, e, k).unwrap(), b"\x1bOS");
     }
+}
+
+fn kitty(flags: u8) -> KeyContext {
+    KeyContext { app_cursor: false, kitty_flags: flags }
+}
+
+#[test]
+fn kitty_disambiguates_escape_from_alt() {
+    // The whole point of the mode: Esc alone must be distinguishable from the
+    // ESC prefix that Alt+key produces.
+    let e = ModifiersState::empty();
+    assert_eq!(encode(&Key::Named(NamedKey::Escape), None, e, kitty(1)).unwrap(), b"\x1b[27u");
+    // Off, it stays the bare byte.
+    assert_eq!(
+        encode(&Key::Named(NamedKey::Escape), None, e, kitty(0)).unwrap(),
+        b"\x1b"
+    );
+}
+
+#[test]
+fn kitty_reports_ctrl_letters_as_csi_u() {
+    // Legacy Ctrl+I and Tab are both 0x09; under kitty they differ.
+    let ctrl = ModifiersState::CONTROL;
+    assert_eq!(encode(&ch("i"), Some("i"), ctrl, kitty(1)).unwrap(), b"\x1b[105;5u");
+    assert_eq!(encode(&Key::Named(NamedKey::Tab), None, ModifiersState::empty(), kitty(1)).unwrap(), b"\t");
+    // And without the mode, Ctrl+I collapses to Tab's byte as before.
+    assert_eq!(encode(&ch("i"), Some("i"), ctrl, kitty(0)).unwrap(), b"\x09");
+}
+
+#[test]
+fn kitty_modifier_bitmask_matches_the_spec() {
+    // 1 + shift(1) + alt(2) + ctrl(4).
+    let both = ModifiersState::CONTROL | ModifiersState::SHIFT;
+    assert_eq!(encode(&ch("a"), Some("a"), both, kitty(1)).unwrap(), b"\x1b[97;6u");
+}
+
+#[test]
+fn kitty_leaves_ordinary_typing_alone() {
+    // Plain text must still be plain text, or Arabic input would break.
+    let e = ModifiersState::empty();
+    assert_eq!(encode(&ch("a"), Some("a"), e, kitty(1)).unwrap(), b"a");
+    assert_eq!(encode(&ch("م"), Some("م"), e, kitty(1)).unwrap(), "م".as_bytes());
 }

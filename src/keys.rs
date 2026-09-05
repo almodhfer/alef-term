@@ -9,6 +9,26 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 pub struct KeyContext {
     /// DECCKM: arrows send SS3 (`ESC O A`) instead of CSI (`ESC [ A`).
     pub app_cursor: bool,
+    /// Kitty keyboard protocol flags. Bit 0 ("disambiguate escape codes") is
+    /// the one that changes encoding here.
+    pub kitty_flags: u8,
+}
+
+/// Kitty's modifier bitmask: shift 1, alt 2, ctrl 4, super 8, reported as
+/// `1 + mask` so an unmodified key is `1`.
+fn kitty_mods(mods: ModifiersState) -> u8 {
+    1 + (mods.shift_key() as u8)
+        + 2 * (mods.alt_key() as u8)
+        + 4 * (mods.control_key() as u8)
+        + 8 * (mods.super_key() as u8)
+}
+
+/// `CSI <codepoint> [; <mods>] u`
+fn csi_u(codepoint: u32, mods: ModifiersState) -> Vec<u8> {
+    match kitty_mods(mods) {
+        1 => format!("\x1b[{codepoint}u").into_bytes(),
+        m => format!("\x1b[{codepoint};{m}u").into_bytes(),
+    }
 }
 
 /// Encode a key press. `text` is the text the OS keyboard layout produced,
@@ -22,6 +42,37 @@ pub fn encode(
     let ctrl = mods.control_key();
     let alt = mods.alt_key();
     let shift = mods.shift_key();
+
+    // Kitty keyboard, "disambiguate escape codes". Without it a terminal cannot
+    // tell Esc from Alt+something, or Ctrl+I from Tab, because both collapse to
+    // the same byte. Editors ask for this so those keys can be bound apart.
+    if ctx.kitty_flags & 1 != 0 {
+        match key {
+            Key::Named(NamedKey::Escape) => return Some(csi_u(27, mods)),
+            Key::Named(NamedKey::Enter) if mods != ModifiersState::empty() => {
+                return Some(csi_u(13, mods))
+            }
+            Key::Named(NamedKey::Tab) if ctrl || alt || mods.super_key() => {
+                return Some(csi_u(9, mods))
+            }
+            Key::Named(NamedKey::Backspace) if mods != ModifiersState::empty() => {
+                return Some(csi_u(127, mods))
+            }
+            Key::Character(sc) => {
+                // Ctrl+letter and any super-modified key are ambiguous or
+                // unrepresentable in the legacy encoding.
+                if ctrl || mods.super_key() {
+                    if let Some(c) = sc.chars().next() {
+                        // Report the base (unshifted) key, lowercased, as kitty
+                        // specifies; the shift state travels in the modifiers.
+                        let base = c.to_lowercase().next().unwrap_or(c);
+                        return Some(csi_u(base as u32, mods));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
     // xterm's modifier parameter: 1 + shift + 2*alt + 4*ctrl.
     let modifier = 1 + (shift as u8) + 2 * (alt as u8) + 4 * (ctrl as u8);

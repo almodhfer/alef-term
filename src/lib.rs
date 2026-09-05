@@ -14,4 +14,5 @@ pub mod keys;
 pub mod layout;
 pub mod pty;
 pub mod render;
+pub mod selection;
 pub mod term;
