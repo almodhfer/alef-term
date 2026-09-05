@@ -141,21 +141,68 @@ impl Selection {
     }
 }
 
+/// Hash of everything about a row that affects its layout — deliberately not
+/// its colours, which are looked up per cell at blit time.
+fn layout_key(
+    row: &crate::grid::Row,
+    cols: usize,
+    pre: &str,
+    post: &str,
+    mode: crate::term::BidiMode,
+    bidi_on: bool,
+    generation: u64,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cols.hash(&mut h);
+    pre.hash(&mut h);
+    post.hash(&mut h);
+    (mode as u8).hash(&mut h);
+    bidi_on.hash(&mut h);
+    generation.hash(&mut h);
+    for cell in row.cells.iter().take(cols) {
+        cell.ch.hash(&mut h);
+        cell.marks().hash(&mut h);
+        // Only the attributes that pick a font, or a cell's width, matter.
+        (cell.attrs & (Attrs::BOLD | Attrs::ITALIC | Attrs::WIDE_LEADING | Attrs::WIDE_SPACER))
+            .bits()
+            .hash(&mut h);
+    }
+    h.finish()
+}
+
 pub struct Renderer {
     pub layouter: Layouter,
-    /// Layout of each visible row from the last frame; also what mouse
-    /// hit-testing consults to map a visual column back to a logical cell.
-    pub layouts: Vec<RowLayout>,
+    /// Cache key of each visible row's layout from the last frame. Mouse
+    /// hit-testing looks the layout up through these.
+    layouts: Vec<u64>,
     /// Inset of the grid from the window edge, in pixels. Glyph ink routinely
     /// overhangs its advance width, so a run flush against the right edge would
     /// otherwise be shaved off — very visible on right-aligned RTL rows.
     pub pad_x: f32,
     pub pad_y: f32,
+    /// Shaped layouts keyed by content. Shaping a row is by far the most
+    /// expensive part of a frame, and between frames most rows do not change.
+    cache: std::collections::HashMap<u64, RowLayout>,
+    /// Keys touched this frame, used to evict what has gone stale.
+    live: Vec<u64>,
 }
 
 impl Renderer {
+    /// Layout of a visible row from the last frame, for mouse hit-testing.
+    pub fn row_layout(&self, row: usize) -> Option<&RowLayout> {
+        self.layouts.get(row).and_then(|k| self.cache.get(k))
+    }
+
     pub fn new() -> Self {
-        Renderer { layouter: Layouter::new(), layouts: Vec::new(), pad_x: 4.0, pad_y: 2.0 }
+        Renderer {
+            layouter: Layouter::new(),
+            layouts: Vec::new(),
+            pad_x: 4.0,
+            pad_y: 2.0,
+            cache: std::collections::HashMap::new(),
+            live: Vec::new(),
+        }
     }
 
     pub fn draw(
@@ -191,7 +238,8 @@ impl Renderer {
             }
         };
 
-        self.layouts.clear();
+        let mut keys: Vec<u64> = Vec::with_capacity(rows);
+        self.live.clear();
         let bidi_on = term.modes.contains(crate::term::Modes::BIDI);
 
         for r in 0..rows {
@@ -209,14 +257,21 @@ impl Renderer {
             } else {
                 String::new()
             };
-            let layout = self.layouter.layout_row_ctx(
-                row,
-                cols,
-                fonts,
-                term.bidi_mode,
-                bidi_on,
-                crate::layout::RowContext { pre: &pre, post: &post },
-            );
+            let key =
+                layout_key(row, cols, &pre, &post, term.bidi_mode, bidi_on, fonts.generation());
+            self.live.push(key);
+            if !self.cache.contains_key(&key) {
+                let fresh = self.layouter.layout_row_ctx(
+                    row,
+                    cols,
+                    fonts,
+                    term.bidi_mode,
+                    bidi_on,
+                    crate::layout::RowContext { pre: &pre, post: &post },
+                );
+                self.cache.insert(key, fresh);
+            }
+            let layout = self.cache.get(&key).expect("just inserted");
             let y = self.pad_y + r as f32 * cell_h;
 
             // --- backgrounds, in visual column order ---
@@ -262,23 +317,25 @@ impl Renderer {
 
             // --- glyphs ---
             for g in &layout.glyphs {
-                if g.attrs.contains(Attrs::HIDDEN) {
+                // Colour and attributes come from the cell, not the glyph, so
+                // the layout above can be cached across a colour change.
+                let Some(cell) = row.cells.get(g.cell) else { continue };
+                if cell.attrs.contains(Attrs::HIDDEN) {
                     continue;
                 }
-                let cell = row.cells.get(g.cell);
-                let inverse = g.attrs.contains(Attrs::INVERSE) ^ reverse;
+                let inverse = cell.attrs.contains(Attrs::INVERSE) ^ reverse;
                 let selected = selection.map_or(false, |s| s.contains(r, g.cell));
                 let mut fg = if inverse {
-                    cell.map_or(def_bg, |c| resolve(c.bg, false))
+                    resolve(cell.bg, false)
                 } else {
-                    resolve(g.fg, true)
+                    resolve(cell.fg, true)
                 };
                 if selected {
                     if let Some(sfg) = palette.selection_fg {
                         fg = sfg;
                     }
                 }
-                if g.attrs.contains(Attrs::DIM) {
+                if cell.attrs.contains(Attrs::DIM) {
                     fg = Rgb(fg.0 / 2 + 8, fg.1 / 2 + 8, fg.2 / 2 + 8);
                 }
 
@@ -317,14 +374,24 @@ impl Renderer {
                 }
             }
 
-            self.layouts.push(layout);
+            keys.push(key);
+        }
+
+        self.layouts = keys;
+        // Evict layouts no longer on screen, so scrollback does not accumulate.
+        if self.cache.len() > self.layouts.len() * 4 + 256 {
+            let live: std::collections::HashSet<u64> = self.layouts.iter().copied().collect();
+            self.cache.retain(|k, _| live.contains(k));
         }
 
         // --- cursor, mapped through the row's logical->visual column map ---
         if term.modes.contains(crate::term::Modes::CURSOR_VISIBLE) && term.grid.view_offset == 0 {
             let cur = term.grid.screen.cursor;
             if cur.row < rows {
-                let layout = &self.layouts[cur.row];
+                let Some(layout) = self.layouts.get(cur.row).and_then(|k| self.cache.get(k))
+                else {
+                    return;
+                };
                 let col = layout.column_of(cur.col.min(cols.saturating_sub(1)));
                 let x = self.pad_x + col as f32 * cell_w;
                 let y = self.pad_y + cur.row as f32 * cell_h;

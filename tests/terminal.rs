@@ -200,3 +200,32 @@ fn presentation_form_ligatures_are_left_intact() {
     assert_eq!(line(&t, 0), "\u{FEFB}");
     assert_eq!(t.grid.screen.cursor.col, 1);
 }
+
+#[test]
+fn osc_52_sets_the_clipboard() {
+    // "hello" base64 is aGVsbG8=
+    let t = run(2, 20, "\x1b]52;c;aGVsbG8=\x07");
+    assert_eq!(t.clipboard_write.as_deref(), Some("hello"));
+}
+
+#[test]
+fn osc_52_handles_utf8_payloads() {
+    // "مرحبا" base64
+    let t = run(2, 20, "\x1b]52;c;2YXYsdit2KjYpw==\x07");
+    assert_eq!(t.clipboard_write.as_deref(), Some("مرحبا"));
+}
+
+#[test]
+fn osc_52_read_requests_are_refused() {
+    // Answering a clipboard read lets anything that can write to the tty
+    // exfiltrate what the user last copied.
+    let t = run(2, 20, "\x1b]52;c;?\x07");
+    assert_eq!(t.clipboard_write, None);
+    assert!(t.replies.is_empty(), "must not answer a clipboard query");
+}
+
+#[test]
+fn osc_52_ignores_malformed_base64() {
+    let t = run(2, 20, "\x1b]52;c;!!!not base64!!!\x07");
+    assert_eq!(t.clipboard_write, None);
+}

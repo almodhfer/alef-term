@@ -138,6 +138,11 @@ impl App {
         for (idx, rgb) in self.term.take_palette_overrides() {
             self.palette.colors[idx as usize] = rgb;
         }
+        if let Some(text) = self.term.clipboard_write.take() {
+            if let Some(cb) = &mut self.clipboard {
+                let _ = cb.set_text(text);
+            }
+        }
         if !self.term.replies.is_empty() {
             let replies = std::mem::take(&mut self.term.replies);
             if let Some(p) = &mut self.pty {
@@ -181,7 +186,7 @@ impl App {
             .min(self.term.grid.rows.saturating_sub(1));
         let col = (((pos.x as f32 - px) / cw).floor().max(0.0) as usize)
             .min(self.term.grid.cols.saturating_sub(1));
-        let cell = match self.renderer.layouts.get(row) {
+        let cell = match self.renderer.row_layout(row) {
             Some(l) => l.cell_at(col),
             None => col,
         };

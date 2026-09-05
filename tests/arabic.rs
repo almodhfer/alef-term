@@ -303,3 +303,36 @@ fn joining_context_applies_from_the_previous_row_too() {
         "ا should join backwards to the previous row"
     );
 }
+
+#[test]
+fn programming_ligatures_form_and_stay_cell_aligned() {
+    // Good terminal fonts implement `->` as a monospace-preserving ligature:
+    // each character becomes half of the arrow, so the glyphs change but the
+    // cell count does not. That is exactly what a grid needs.
+    let fonts = Fonts::new(16.0, None).unwrap();
+    let id = fonts.face_id(arabic_term::font::Slot::Mono, Default::default());
+    let face = &fonts.faces[id];
+    let isolated: Vec<u16> =
+        "->".chars().map(|c| face.hb.glyph_index(c).map(|g| g.0).unwrap_or(0)).collect();
+
+    let cols = 20;
+    let (l, _t) = layout("a -> b", cols, BidiMode::ForceLtr);
+    let shaped: Vec<u16> = l
+        .glyphs
+        .iter()
+        .filter(|g| g.cell == 2 || g.cell == 3)
+        .map(|g| g.glyph)
+        .collect();
+    assert_eq!(shaped.len(), 2, "the arrow keeps one glyph per cell");
+
+    if shaped != isolated {
+        // The font ligates: check the halves still sit on their own columns.
+        let xs: Vec<f32> = l.glyphs.iter().filter(|g| g.cell == 2 || g.cell == 3).map(|g| g.x).collect();
+        assert!(
+            (xs[1] - xs[0] - fonts.cell_w).abs() < 1.0,
+            "ligature halves must stay one cell apart, got {xs:?}"
+        );
+    } else {
+        eprintln!("font has no ligature for '->'; alignment check skipped");
+    }
+}

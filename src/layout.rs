@@ -17,7 +17,6 @@
 //!    a cell is what tears Arabic joins apart, and it buys nothing, because
 //!    nothing downstream measures ink.
 
-use crate::color::Color;
 use crate::font::{Fonts, Slot, Style};
 use crate::grid::{Attrs, Row};
 use crate::term::BidiMode;
@@ -32,9 +31,9 @@ pub struct PositionedGlyph {
     /// Baseline-relative y offset (positive moves the glyph up).
     pub y: f32,
     pub px: f32,
-    pub fg: Color,
-    pub attrs: Attrs,
-    /// Logical cell this glyph came from, for hit-testing and selection.
+    /// Logical cell this glyph came from. Colour and attributes are read from
+    /// that cell at blit time rather than stored here, so a colour change costs
+    /// no reshaping and a cached layout stays valid across one.
     pub cell: usize,
 }
 
@@ -532,9 +531,21 @@ impl Layouter {
                         j += 1;
                     }
                     let item = self.items.get(cl as usize).unwrap_or(&self.items[g.items[0]]);
-                    let cell = &row.cells[item.cell];
                     let col = out.cell_to_column.get(item.cell).copied().unwrap_or(item.cell);
-                    let cell_span = item.columns as f32 * cell_w;
+                    // A cluster can cover several items — a ligature like `->`
+                    // fuses two characters into one glyph — so its box is all
+                    // the columns those items own, not just the first one's.
+                    // Measuring only the first would squeeze the glyph into a
+                    // single cell and overlap its neighbour.
+                    let next_cl = kept
+                        .get(j)
+                        .map(|&(n, _)| infos[n].cluster as usize)
+                        .unwrap_or(*g.items.last().unwrap() + 1);
+                    let span_cols: usize = (cl as usize..next_cl.max(cl as usize + 1))
+                        .filter_map(|ix| self.items.get(ix))
+                        .map(|it| it.columns)
+                        .sum();
+                    let cell_span = span_cols.max(item.columns) as f32 * cell_w;
                     // Centre the cluster in its cell so the rounding slack is
                     // split evenly rather than pushed to one side.
                     let mut pen = col as f32 * cell_w + (cell_span - adv) * 0.5;
@@ -547,8 +558,6 @@ impl Layouter {
                                 x: pen + poss[k].x_offset as f32 * scale,
                                 y: poss[k].y_offset as f32 * scale,
                                 px,
-                                fg: cell.fg,
-                                attrs: cell.attrs,
                                 cell: item.cell,
                             });
                         }
@@ -581,7 +590,6 @@ impl Layouter {
             for &(k, at) in &kept {
                 let src = infos[k].cluster as usize;
                 let item = self.items.get(src).unwrap_or(&self.items[g.items[0]]);
-                let cell = &row.cells[item.cell];
                 let inkless = item.ch == ' ' && item.marks.is_empty();
                 if !inkless && !crate::boxdraw::is_procedural(item.ch) {
                     out.glyphs.push(PositionedGlyph {
@@ -590,8 +598,6 @@ impl Layouter {
                         x: base + (at - origin) * shrink + poss[k].x_offset as f32 * scale,
                         y: poss[k].y_offset as f32 * scale,
                         px,
-                        fg: cell.fg,
-                        attrs: cell.attrs,
                         cell: item.cell,
                     });
                 }

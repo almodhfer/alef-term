@@ -110,6 +110,8 @@ pub struct Fonts {
     pub arabic_scale: f32,
     /// Whether `arabic_scale` is derived from metrics rather than user-set.
     auto_arabic_scale: bool,
+    /// Bumped whenever metrics change, so cached layouts can be invalidated.
+    generation: u64,
     pub size_px: f32,
     /// Cell metrics derived from the monospace face.
     pub cell_w: f32,
@@ -117,60 +119,67 @@ pub struct Fonts {
     pub baseline: f32,
 }
 
-/// A candidate font file: path plus per-style face indices within a .ttc.
-/// A leading `~/` is expanded against the user's home directory.
-struct Candidate {
-    slot: Slot,
-    path: &'static str,
-    /// (regular, bold, italic, bold-italic) face indices within the file.
-    faces: [u32; 4],
-    /// Per-style file paths, when the styles are separate files rather than
-    /// faces inside one collection. Takes precedence over `path` when set.
-    style_paths: Option<[&'static str; 4]>,
-}
-
-const fn ttc(slot: Slot, path: &'static str, faces: [u32; 4]) -> Candidate {
-    Candidate { slot, path, faces, style_paths: None }
-}
-
-const fn files(slot: Slot, style_paths: [&'static str; 4]) -> Candidate {
-    Candidate { slot, path: style_paths[0], faces: [0; 4], style_paths: Some(style_paths) }
-}
-
-const CANDIDATES: &[Candidate] = &[
-    // A Nerd Font is preferred for the monospace slot: it is a good terminal
-    // face and it carries the private-use icons that status bars, file trees
-    // and workspace managers draw with. The "Mono" cut keeps those icons a
-    // single cell wide, which is what the grid needs.
-    files(
+/// Families to look for in each slot, best first.
+///
+/// A Nerd Font is preferred for the monospace slot: it is a good terminal face
+/// and it carries the private-use icons that status bars, file trees and
+/// workspace managers draw with. The "Mono" cut keeps those icons one cell wide,
+/// which is what the grid needs.
+const FAMILIES: &[(Slot, &[&str])] = &[
+    (
         Slot::Mono,
-        [
-            "~/Library/Fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
-            "~/Library/Fonts/JetBrainsMonoNerdFontMono-Bold.ttf",
-            "~/Library/Fonts/JetBrainsMonoNerdFontMono-Italic.ttf",
-            "~/Library/Fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf",
+        &[
+            "JetBrainsMono Nerd Font Mono",
+            "JetBrainsMonoNL Nerd Font Mono",
+            "FiraCode Nerd Font Mono",
+            "Hack Nerd Font Mono",
+            "MesloLGS Nerd Font Mono",
+            "CaskaydiaCove Nerd Font Mono",
+            "JetBrains Mono",
+            "Menlo",
+            "SF Mono",
+            "DejaVu Sans Mono",
+            "Liberation Mono",
+            "Consolas",
+            "Ubuntu Mono",
+            "Noto Sans Mono",
+            "Monaco",
+            "Courier New",
         ],
     ),
-    files(
-        Slot::Mono,
-        [
-            "~/Library/Fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf",
-            "~/Library/Fonts/JetBrainsMonoNLNerdFontMono-Bold.ttf",
-            "~/Library/Fonts/JetBrainsMonoNLNerdFontMono-Italic.ttf",
-            "~/Library/Fonts/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf",
+    (
+        Slot::Arabic,
+        &[
+            "Geeza Pro",
+            "Noto Naskh Arabic",
+            "Noto Sans Arabic",
+            "Amiri",
+            "Scheherazade New",
+            "Al Bayan",
+            "Baghdad",
+            "Damascus",
+            "Al Nile",
+            "DejaVu Sans",
         ],
     ),
-    // Menlo.ttc carries all four styles as separate faces.
-    ttc(Slot::Mono, "/System/Library/Fonts/Menlo.ttc", [0, 1, 2, 3]),
-    ttc(Slot::Mono, "/System/Library/Fonts/Monaco.ttf", [0, 0, 0, 0]),
-    ttc(Slot::Mono, "/System/Library/Fonts/Courier.ttc", [0, 1, 2, 3]),
-    // GeezaPro.ttc has regular + bold.
-    ttc(Slot::Arabic, "/System/Library/Fonts/GeezaPro.ttc", [0, 1, 0, 1]),
-    ttc(Slot::Arabic, "/System/Library/Fonts/Supplemental/Al Nile.ttc", [0, 1, 0, 1]),
-    ttc(Slot::Emoji, "/System/Library/Fonts/Apple Color Emoji.ttc", [0, 0, 0, 0]),
-    // Icon-only fallback, for when the monospace face is not a Nerd Font.
-    ttc(Slot::Symbols, "~/Library/Fonts/SymbolsNerdFontMono-Regular.ttf", [0, 0, 0, 0]),
-    ttc(Slot::Fallback, "/System/Library/Fonts/Apple Symbols.ttf", [0, 0, 0, 0]),
+    (Slot::Symbols, &["Symbols Nerd Font Mono", "Symbols Nerd Font"]),
+    (
+        Slot::Emoji,
+        &["Apple Color Emoji", "Noto Color Emoji", "Segoe UI Emoji", "Twemoji Mozilla"],
+    ),
+    (
+        Slot::Fallback,
+        &["Apple Symbols", "Arial Unicode MS", "Noto Sans Symbols 2", "DejaVu Sans"],
+    ),
+];
+
+/// Last-resort absolute paths, for the case where no system font database is
+/// available (a stripped container, say) but the files are still on disk.
+const FALLBACK_PATHS: &[(Slot, &str, u32)] = &[
+    (Slot::Mono, "/System/Library/Fonts/Menlo.ttc", 0),
+    (Slot::Mono, "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 0),
+    (Slot::Arabic, "/System/Library/Fonts/GeezaPro.ttc", 0),
+    (Slot::Arabic, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
 ];
 
 /// Expand a leading `~/` against the home directory.
@@ -184,12 +193,38 @@ fn expand(path: &str) -> std::path::PathBuf {
     }
 }
 
-fn style_idx(s: Style) -> usize {
-    match (s.bold, s.italic) {
-        (false, false) => 0,
-        (true, false) => 1,
-        (false, true) => 2,
-        (true, true) => 3,
+fn style_of(s: Style) -> (fontdb::Weight, fontdb::Style) {
+    (
+        if s.bold { fontdb::Weight::BOLD } else { fontdb::Weight::NORMAL },
+        if s.italic { fontdb::Style::Italic } else { fontdb::Style::Normal },
+    )
+}
+
+/// Find the best face for `family` in `style`, as a (path, face index) pair.
+///
+/// Matching is done by walking the database rather than through `Query`, so an
+/// exactly-named family always wins and we can fall back within the family when
+/// a particular style is missing.
+fn find_face(db: &fontdb::Database, family: &str, style: Style) -> Option<(String, u32)> {
+    let (want_weight, want_style) = style_of(style);
+    let mut best: Option<(&fontdb::FaceInfo, i32)> = None;
+    for face in db.faces() {
+        if !face.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(family)) {
+            continue;
+        }
+        // Prefer an exact style match; otherwise take the closest weight, so a
+        // family shipped without an italic still yields something usable.
+        let weight_gap = (face.weight.0 as i32 - want_weight.0 as i32).abs();
+        let style_gap = if face.style == want_style { 0 } else { 1000 };
+        let score = style_gap + weight_gap;
+        if best.map_or(true, |(_, b)| score < b) {
+            best = Some((face, score));
+        }
+    }
+    let (face, _) = best?;
+    match &face.source {
+        fontdb::Source::File(p) => Some((p.to_str()?.to_string(), face.index)),
+        _ => None,
     }
 }
 
@@ -207,27 +242,50 @@ impl Fonts {
         let mut faces = Vec::new();
         let mut map = HashMap::new();
 
-        for cand in CANDIDATES {
-            for style in STYLES {
-                if map.contains_key(&(cand.slot, style)) {
-                    continue;
-                }
-                let si = style_idx(style);
-                let (path, idx) = match cand.style_paths {
-                    Some(paths) => (expand(paths[si]), 0),
-                    None => (expand(cand.path), cand.faces[si]),
-                };
-                if !path.exists() {
-                    continue;
-                }
-                let Some(path_str) = path.to_str() else { continue };
-                match Face::load(path_str, idx) {
-                    Ok(f) => {
-                        faces.push(f);
-                        map.insert((cand.slot, style), faces.len() - 1);
+        // Ask the platform what it has, rather than guessing at paths. This is
+        // also what makes the font stack work off macOS.
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
+        for dir in ["~/Library/Fonts", "~/.local/share/fonts", "~/.fonts"] {
+            let p = expand(dir);
+            if p.is_dir() {
+                db.load_fonts_dir(p);
+            }
+        }
+
+        for (slot, families) in FAMILIES {
+            for family in *families {
+                for style in STYLES {
+                    if map.contains_key(&(*slot, style)) {
+                        continue;
                     }
-                    Err(e) => log::debug!("skipping {path_str}#{idx}: {e}"),
+                    let Some((path, idx)) = find_face(&db, family, style) else { continue };
+                    match Face::load(&path, idx) {
+                        Ok(f) => {
+                            faces.push(f);
+                            map.insert((*slot, style), faces.len() - 1);
+                        }
+                        Err(e) => log::debug!("skipping {path}#{idx}: {e}"),
+                    }
                 }
+                // Once a family has supplied the regular face, stay with it for
+                // the remaining styles rather than mixing two designs.
+                if map.contains_key(&(*slot, Style::default())) {
+                    break;
+                }
+            }
+        }
+
+        for (slot, path, idx) in FALLBACK_PATHS {
+            if map.contains_key(&(*slot, Style::default())) {
+                continue;
+            }
+            if !std::path::Path::new(path).exists() {
+                continue;
+            }
+            if let Ok(f) = Face::load(path, *idx) {
+                faces.push(f);
+                map.insert((*slot, Style::default()), faces.len() - 1);
             }
         }
 
@@ -244,6 +302,7 @@ impl Fonts {
             scalers,
             arabic_scale: arabic_scale.unwrap_or(1.0),
             auto_arabic_scale: auto,
+            generation: 0,
             size_px,
             cell_w: 0.0,
             cell_h: 0.0,
@@ -324,7 +383,13 @@ impl Fonts {
         self.baseline = (ascent + (self.cell_h - line) * 0.5).round();
     }
 
+    #[inline]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn set_size(&mut self, size_px: f32) {
+        self.generation += 1;
         self.size_px = size_px.clamp(6.0, 200.0);
         self.cache.clear();
         self.recompute_metrics();
@@ -335,6 +400,7 @@ impl Fonts {
     }
 
     pub fn set_arabic_scale(&mut self, s: f32) {
+        self.generation += 1;
         self.auto_arabic_scale = false;
         self.arabic_scale = s.clamp(0.5, 2.5);
         self.cache.clear();

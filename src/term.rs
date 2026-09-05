@@ -64,6 +64,9 @@ pub struct Terminal {
     pub replies: Vec<u8>,
     /// Set whenever the visible content changed and a redraw is needed.
     pub damaged: bool,
+    /// Text an application asked to place on the clipboard via OSC 52. The UI
+    /// drains this; reads are refused, see `osc_dispatch`.
+    pub clipboard_write: Option<String>,
     /// Current OSC 8 hyperlink, applied to printed cells.
     link: Option<Box<str>>,
     /// True when charset G0 is the DEC line-drawing set (ESC ( 0).
@@ -81,6 +84,7 @@ impl Terminal {
             title: String::from("arabic-term"),
             replies: Vec::new(),
             damaged: true,
+            clipboard_write: None,
             link: None,
             dec_graphics: false,
             tab_stops: default_tabs(cols),
@@ -539,6 +543,32 @@ impl Perform for Terminal {
                     i += 2;
                 }
             }
+            b"52" => {
+                // OSC 52: set the clipboard. Params are ; <selection> ; <base64>.
+                //
+                // Reads are deliberately not implemented. A terminal that
+                // answers OSC 52 queries lets any program that can write to the
+                // tty — including one on the far end of an ssh session, or
+                // anything that manages to echo a string — exfiltrate whatever
+                // the user last copied. Every mainstream terminal disables
+                // reads by default for this reason.
+                let Some(data) = params.get(2) else { return };
+                if *data == b"?" {
+                    log::debug!("refusing OSC 52 clipboard read");
+                    return;
+                }
+                match base64_decode(data) {
+                    Some(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes).into_owned();
+                        // Cap it: a runaway sequence should not be able to make
+                        // us allocate without bound.
+                        if text.len() <= 1 << 20 {
+                            self.clipboard_write = Some(text);
+                        }
+                    }
+                    None => log::debug!("ignoring malformed OSC 52 payload"),
+                }
+            }
             b"8" => {
                 // OSC 8 ; params ; URI  (empty URI closes the link)
                 self.link = match params.get(2) {
@@ -803,6 +833,36 @@ impl Perform for Terminal {
             _ => {}
         }
     }
+}
+
+/// Decode standard base64, rejecting anything malformed.
+fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
+    #[inline]
+    fn val(c: u8) -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => (c - b'A') as u32,
+            b'a'..=b'z' => (c - b'a') as u32 + 26,
+            b'0'..=b'9' => (c - b'0') as u32 + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        })
+    }
+    let mut out = Vec::with_capacity(input.len() / 4 * 3);
+    let mut acc: u32 = 0;
+    let mut bits = 0u32;
+    for &c in input {
+        if c == b'=' || c.is_ascii_whitespace() {
+            continue;
+        }
+        acc = (acc << 6) | val(c)?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
 }
 
 fn parse_xcolor(spec: &[u8]) -> Option<Rgb> {
