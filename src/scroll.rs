@@ -2,6 +2,66 @@
 //!
 //! Kept separate from the window so the motion can be tested directly.
 
+/// How far a wheel or trackpad gesture moves the view.
+///
+/// Two separate factors, because the inputs are not alike. A wheel reports
+/// discrete notches, and one notch moving one line feels stuck — every terminal
+/// multiplies it. A trackpad reports pixels, which convert to lines directly;
+/// but a 1:1 mapping of finger travel to content ties scrolling to the physical
+/// size of a cell, so on a dense display a full swipe barely moves the page.
+#[derive(Clone, Copy, Debug)]
+pub struct WheelTuning {
+    /// Lines per notch of a discrete wheel.
+    pub wheel: f32,
+    /// Multiplier on the pixels-to-lines conversion for continuous devices.
+    pub touch: f32,
+}
+
+impl Default for WheelTuning {
+    fn default() -> Self {
+        WheelTuning { wheel: 3.0, touch: 3.0 }
+    }
+}
+
+/// A scroll delta as the windowing layer reports it.
+#[derive(Clone, Copy, Debug)]
+pub enum WheelDelta {
+    /// Discrete notches, positive scrolling back into history.
+    Lines(f32),
+    /// Continuous pixels, positive scrolling back into history.
+    Pixels(f32),
+}
+
+/// Convert a raw delta into lines of movement.
+///
+/// When an application has grabbed the mouse the multipliers are dropped: a
+/// report should say how far the user actually scrolled, and inflating it
+/// claims movement that did not happen.
+pub fn wheel_to_lines(
+    delta: WheelDelta,
+    cell_h: f32,
+    tuning: WheelTuning,
+    grabbed: bool,
+) -> f32 {
+    match delta {
+        WheelDelta::Lines(y) => {
+            if grabbed {
+                y
+            } else {
+                y * tuning.wheel
+            }
+        }
+        WheelDelta::Pixels(py) => {
+            let lines = py / cell_h.max(1.0);
+            if grabbed {
+                lines
+            } else {
+                lines * tuning.touch
+            }
+        }
+    }
+}
+
 /// Tracks where the view is, where it is heading, and how fast it gets there.
 #[derive(Default, Debug, Clone, Copy)]
 pub struct Scroller {

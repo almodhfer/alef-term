@@ -227,3 +227,56 @@ fn scroll_up_no_longer_adjusts_the_view_offset_itself() {
     vt.feed(&mut t, b"more\r\n");
     assert_eq!(t.grid.view_offset, before, "grid must not move the view itself");
 }
+
+mod wheel {
+    use arabic_term::scroll::{wheel_to_lines, WheelDelta, WheelTuning};
+
+    const CELL_H: f32 = 34.0; // a retina cell
+
+    #[test]
+    fn a_wheel_notch_moves_more_than_one_line() {
+        // One notch to one line feels stuck; every terminal multiplies it.
+        let t = WheelTuning::default();
+        assert_eq!(wheel_to_lines(WheelDelta::Lines(1.0), CELL_H, t, false), 3.0);
+        assert_eq!(wheel_to_lines(WheelDelta::Lines(-2.0), CELL_H, t, false), -6.0);
+    }
+
+    #[test]
+    fn trackpad_gestures_are_multiplied_too() {
+        // The regression this guards: dropping the multiplier from pixel deltas
+        // made trackpad scrolling three times slower than it had been, which is
+        // immediately obvious in use.
+        let t = WheelTuning::default();
+        let one_cell = wheel_to_lines(WheelDelta::Pixels(CELL_H), CELL_H, t, false);
+        assert_eq!(one_cell, 3.0, "a cell of finger travel moves three lines");
+        assert!(
+            one_cell > 1.0,
+            "a bare pixels-to-lines conversion ties scrolling to cell height \
+             and feels sluggish on a dense display"
+        );
+    }
+
+    #[test]
+    fn reports_to_an_application_are_never_inflated() {
+        // A report should say how far the user actually scrolled.
+        let t = WheelTuning::default();
+        assert_eq!(wheel_to_lines(WheelDelta::Lines(1.0), CELL_H, t, true), 1.0);
+        assert_eq!(wheel_to_lines(WheelDelta::Pixels(CELL_H), CELL_H, t, true), 1.0);
+    }
+
+    #[test]
+    fn the_speed_is_tunable_in_both_directions() {
+        let slow = WheelTuning { wheel: 1.0, touch: 1.0 };
+        assert_eq!(wheel_to_lines(WheelDelta::Lines(1.0), CELL_H, slow, false), 1.0);
+        let fast = WheelTuning { wheel: 10.0, touch: 8.0 };
+        assert_eq!(wheel_to_lines(WheelDelta::Lines(1.0), CELL_H, fast, false), 10.0);
+        assert_eq!(wheel_to_lines(WheelDelta::Pixels(CELL_H), CELL_H, fast, false), 8.0);
+    }
+
+    #[test]
+    fn a_degenerate_cell_height_cannot_divide_by_zero() {
+        let t = WheelTuning::default();
+        let v = wheel_to_lines(WheelDelta::Pixels(10.0), 0.0, t, false);
+        assert!(v.is_finite(), "got {v}");
+    }
+}

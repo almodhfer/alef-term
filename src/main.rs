@@ -17,6 +17,16 @@ fn main() -> anyhow::Result<()> {
             "--arabic-scale" => {
                 cfg.arabic_scale = args.next().and_then(|v| v.parse().ok());
             }
+            "--scroll-lines" => {
+                if let Some(v) = args.next().and_then(|v| v.parse().ok()) {
+                    cfg.wheel.wheel = v;
+                }
+            }
+            "--touch-scroll" => {
+                if let Some(v) = args.next().and_then(|v| v.parse().ok()) {
+                    cfg.wheel.touch = v;
+                }
+            }
             "--no-alternate-scroll" => cfg.alternate_scroll = false,
             "--exec" | "-e" => {
                 if let Some(v) = args.next() {
@@ -30,6 +40,8 @@ fn main() -> anyhow::Result<()> {
                        --font-size <px>       base font size (default 15)\n  \
                        --arabic-scale <f>     Arabic face scale (default: from metrics)\n  \
                        --exec <cmd>           run a command at startup\n  \
+                       --scroll-lines <n>     lines per wheel notch (default 3)\n  \
+                       --touch-scroll <f>     trackpad scroll speed (default 3)\n  \
                        --no-alternate-scroll  do not turn the wheel into arrow\n  \
                        \u{20}                      keys for full-screen programs\n\n\
                      Keys:\n  \

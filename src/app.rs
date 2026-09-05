@@ -41,6 +41,8 @@ pub struct Config {
     /// Text written to the shell once it starts — handy for demos and for
     /// driving the terminal from a test.
     pub startup_cmd: Option<String>,
+    /// How far a wheel notch or a trackpad gesture scrolls.
+    pub wheel: crate::scroll::WheelTuning,
     /// Translate the wheel into arrow keys for full-screen programs that have
     /// not asked for mouse events. Useful for `less` and `man`; unwanted for
     /// anything that binds the arrows to something destructive.
@@ -56,6 +58,7 @@ impl Default for Config {
             cols: 96,
             rows: 28,
             startup_cmd: None,
+            wheel: Default::default(),
             alternate_scroll: true,
         }
     }
@@ -666,18 +669,17 @@ impl ApplicationHandler<Wake> for App {
                 // the movement is being reported to an application — inflating
                 // a report tells the program the user scrolled further than
                 // they did.
-                let raw = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => {
-                        if grabbed {
-                            y
-                        } else {
-                            y * 3.0
+                let raw = crate::scroll::wheel_to_lines(
+                    match delta {
+                        MouseScrollDelta::LineDelta(_, y) => crate::scroll::WheelDelta::Lines(y),
+                        MouseScrollDelta::PixelDelta(p) => {
+                            crate::scroll::WheelDelta::Pixels(p.y as f32)
                         }
-                    }
-                    MouseScrollDelta::PixelDelta(p) => {
-                        p.y as f32 / self.fonts.cell_h.max(1.0)
-                    }
-                };
+                    },
+                    self.fonts.cell_h,
+                    self.cfg.wheel,
+                    grabbed,
+                );
                 if raw == 0.0 {
                     return;
                 }
