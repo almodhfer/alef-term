@@ -141,9 +141,9 @@ Colours (16 / 256 / truecolour, both `;` and `:` SGR forms), bold/dim/italic/
 underline/strikeout/inverse, cursor addressing, erase and insert/delete of
 characters and lines, `DECSTBM` scroll regions, the alternate screen, scrollback,
 autowrap with deferred wrap at the margin, wide (CJK) characters with spacers,
-combining marks, DEC line-drawing charset, mouse reporting (normal and SGR),
-bracketed paste, focus events, window title (OSC 0/2), palette changes (OSC 4),
-hyperlinks (OSC 8), clipboard writes (OSC 52), device status reports, the kitty
+combining marks, DEC line-drawing charset, bracketed paste, focus events, window title (OSC 0/2), palette changes (OSC 4),
+hyperlinks (OSC 8), clipboard writes (OSC 52), device status reports, mouse
+reporting (click, drag, any-motion, wheel; legacy and SGR), the kitty
 keyboard protocol's disambiguation flag, images via both sixel and the kitty
 graphics protocol, selection and clipboard, and resize propagated to the child
 via `TIOCSWINSZ`.
@@ -159,7 +159,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-123 tests, covering: VT and grid behaviour; font coverage and fallback; the
+126 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics

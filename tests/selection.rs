@@ -100,3 +100,45 @@ fn wide_characters_are_not_duplicated() {
     let t = term(3, 20, "日本");
     assert_eq!(selected_text(&t, sel((0, 0), (0, 3))), "日本");
 }
+
+#[test]
+fn a_selection_stays_on_its_text_when_output_arrives() {
+    // Selection rows are absolute lines, not viewport rows. Anchored to the
+    // viewport, a selection would slide over the text as output pushed lines
+    // into scrollback — ending up covering different characters than the ones
+    // that were dragged over.
+    let mut t = Terminal::new(4, 20, 500);
+    let mut vt = Vt::new();
+    for i in 1..=6 {
+        vt.feed(&mut t, format!("line{i}\r\n").as_bytes());
+    }
+    // Find the absolute line holding "line3" and select it.
+    let abs = (0..t.grid.total_lines())
+        .find(|&i| {
+            t.grid
+                .line(i as isize)
+                .map(|r| r.cells.iter().map(|c| c.ch).collect::<String>().starts_with("line3"))
+                .unwrap_or(false)
+        })
+        .expect("line3 is somewhere");
+    let s = sel((abs, 0), (abs, 4));
+    assert_eq!(selected_text(&t, s), "line3");
+
+    // Output arrives, pushing more lines into scrollback.
+    for i in 7..=15 {
+        vt.feed(&mut t, format!("line{i}\r\n").as_bytes());
+    }
+    assert_eq!(selected_text(&t, s), "line3", "selection still covers its text");
+}
+
+#[test]
+fn a_selection_reaches_into_scrollback() {
+    // The oldest retained line must be selectable, not just what is on screen.
+    let mut t = Terminal::new(3, 20, 500);
+    let mut vt = Vt::new();
+    for i in 1..=12 {
+        vt.feed(&mut t, format!("line{i}\r\n").as_bytes());
+    }
+    assert!(t.grid.scrollback.len() > 3, "content retired into scrollback");
+    assert_eq!(selected_text(&t, sel((0, 0), (0, 4))), "line1");
+}

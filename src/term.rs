@@ -37,12 +37,14 @@ bitflags::bitflags! {
         /// Terminal bidi: reorder rows for display (our own default-on mode,
         /// toggled by the private mode ?8888 so scripts can opt out).
         const BIDI            = 1 << 14;
+        /// Turn the wheel into cursor keys on the alternate screen (?1007).
+        const ALT_SCROLL      = 1 << 15;
     }
 }
 
 impl Default for Modes {
     fn default() -> Self {
-        Modes::AUTOWRAP | Modes::CURSOR_VISIBLE | Modes::BIDI
+        Modes::AUTOWRAP | Modes::CURSOR_VISIBLE | Modes::BIDI | Modes::ALT_SCROLL
     }
 }
 
@@ -300,6 +302,7 @@ impl Terminal {
             (true, 1003) => Modes::MOUSE_MOTION,
             (true, 1004) => Modes::FOCUS_EVENTS,
             (true, 1006) => Modes::MOUSE_SGR,
+            (true, 1007) => Modes::ALT_SCROLL,
             (true, 2004) => Modes::BRACKETED_PASTE,
             (true, 8888) => Modes::BIDI,
             (true, 47) | (true, 1047) | (true, 1049) => {

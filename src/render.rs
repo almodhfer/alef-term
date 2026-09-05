@@ -258,7 +258,7 @@ impl Renderer {
                 }
                 continue;
             };
-            let r = ri.max(0) as usize;
+
             // Joining context across a soft wrap: a word broken by the right
             // margin has not ended, so its letters must still take their joined
             // forms on both sides of the break.
@@ -294,8 +294,9 @@ impl Renderer {
             // --- backgrounds, in visual column order ---
             for (col, &cell_idx) in layout.visual_cells.iter().enumerate() {
                 let Some(cell) = row.cells.get(cell_idx) else { continue };
-                let selected =
-                    ri >= 0 && selection.map_or(false, |s| s.contains(r, cell_idx));
+                let selected = ri >= 0
+                    && abs >= 0
+                    && selection.map_or(false, |s| s.contains(abs as usize, cell_idx));
                 let inverse = cell.attrs.contains(Attrs::INVERSE) ^ reverse;
                 let mut bg = if inverse {
                     resolve(cell.fg, true)
@@ -342,8 +343,9 @@ impl Renderer {
                     continue;
                 }
                 let inverse = cell.attrs.contains(Attrs::INVERSE) ^ reverse;
-                let selected =
-                    ri >= 0 && selection.map_or(false, |s| s.contains(r, g.cell));
+                let selected = ri >= 0
+                    && abs >= 0
+                    && selection.map_or(false, |s| s.contains(abs as usize, g.cell));
                 let mut fg = if inverse {
                     resolve(cell.bg, false)
                 } else {

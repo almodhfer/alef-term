@@ -9,6 +9,11 @@ use crate::term::Terminal;
 /// the text between the two endpoints as the program wrote it, which is what
 /// gets copied and what a shell expects back. Within a uniform run that is also
 /// visually contiguous, so it looks right as well.
+///
+/// Rows are **absolute line numbers** across scrollback and screen, not
+/// viewport rows. Anchoring to the viewport would make a selection slide over
+/// the text whenever output arrived or the view scrolled — it would end up
+/// covering different characters than the ones that were dragged over.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Selection {
     pub start: (usize, usize),
@@ -17,6 +22,11 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// Endpoints in order, regardless of which way the drag went.
+    pub fn bounds(&self) -> ((usize, usize), (usize, usize)) {
+        self.normalized()
+    }
+
     fn normalized(&self) -> ((usize, usize), (usize, usize)) {
         if self.start <= self.end {
             (self.start, self.end)
@@ -54,14 +64,15 @@ impl Selection {
 /// are trimmed, so pasting back what was copied reproduces the original
 /// command rather than the way it happened to be broken across the screen.
 pub fn selected_text(term: &Terminal, sel: Selection) -> String {
+    let (a, b) = sel.bounds();
     let mut out = String::new();
     let mut pending_wrap = false;
-    for r in 0..term.grid.rows {
-        let row = term.grid.viewport_row(r);
+    for abs_line in a.0..=b.0 {
+        let Some(row) = term.grid.line(abs_line as isize) else { continue };
         let mut line = String::new();
         let mut any = false;
         for (i, cell) in row.cells.iter().enumerate() {
-            if !sel.contains(r, i) {
+            if !sel.contains(abs_line, i) {
                 continue;
             }
             any = true;

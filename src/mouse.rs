@@ -27,8 +27,15 @@ fn with_modifiers(button: u8, mods: ModifiersState) -> u8 {
         + if mods.control_key() { 16 } else { 0 }
 }
 
-/// Encode one event. `row` and `col` are zero-based; the wire format is
-/// one-based. `sgr` selects the 1006 encoding over the original X10 one.
+/// Motion is reported with 32 added to the button number.
+pub const MOTION: u8 = 32;
+/// Motion with no button held, for any-motion tracking (mode 1003).
+pub const BTN_NONE: u8 = 3;
+
+/// Encode one event, or `None` when it cannot be expressed.
+///
+/// `row` and `col` are zero-based; the wire format is one-based. `sgr` selects
+/// the 1006 encoding over the original X10 one.
 pub fn encode(
     button: u8,
     pressed: bool,
@@ -36,7 +43,7 @@ pub fn encode(
     col: usize,
     mods: ModifiersState,
     sgr: bool,
-) -> Vec<u8> {
+) -> Option<Vec<u8>> {
     let b = with_modifiers(button, mods);
     let (r, c) = (row + 1, col + 1);
 
@@ -44,7 +51,14 @@ pub fn encode(
         // SGR can express any coordinate, and distinguishes release by the
         // final byte rather than by a magic button number.
         let final_byte = if pressed { 'M' } else { 'm' };
-        return format!("\x1b[<{b};{c};{r}{final_byte}").into_bytes();
+        return Some(format!("\x1b[<{b};{c};{r}{final_byte}").into_bytes());
+    }
+
+    // X10 has one byte per field, so anything past 223 is inexpressible. Drop
+    // the report rather than clamping: clamping would tell the application the
+    // pointer is somewhere it is not, which is worse than silence.
+    if c > 223 || r > 223 {
+        return None;
     }
 
     // X10: one byte per field, offset by 32. Release is button 3, except for
@@ -53,9 +67,7 @@ pub fn encode(
     let mut out = Vec::with_capacity(6);
     out.extend_from_slice(b"\x1b[M");
     out.push(32u8.saturating_add(code));
-    // Coordinates beyond 223 cannot be expressed; clamp rather than wrap into
-    // a byte that would be read as something else entirely.
-    out.push(32u8.saturating_add(c.min(223) as u8));
-    out.push(32u8.saturating_add(r.min(223) as u8));
-    out
+    out.push(32 + c as u8);
+    out.push(32 + r as u8);
+    Some(out)
 }

@@ -10,7 +10,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
@@ -66,10 +66,16 @@ pub struct App {
     selection: Option<Selection>,
     selecting: bool,
     mouse_cell: (usize, usize),
+    /// Button currently held, for drag reporting.
+    mouse_held: Option<u8>,
     clipboard: Option<arboard::Clipboard>,
     needs_redraw: bool,
     exited: bool,
     scroll: crate::scroll::Scroller,
+    /// Fractional wheel movement not yet worth a whole line. Trackpads deliver
+    /// deltas far smaller than a row; without carrying the remainder, either
+    /// nothing ever fires or every tiny event fires a full line.
+    wheel_remainder: f32,
     last_frame: Option<std::time::Instant>,
     scrollbar_fade: f32,
 }
@@ -95,10 +101,12 @@ impl App {
             selection: None,
             selecting: false,
             mouse_cell: (0, 0),
+            mouse_held: None,
             clipboard: arboard::Clipboard::new().ok(),
             needs_redraw: true,
             exited: false,
             scroll: Default::default(),
+            wheel_remainder: 0.0,
             last_frame: None,
             scrollbar_fade: 0.0,
         })
@@ -160,7 +168,7 @@ impl App {
                 // program that repaints continuously would otherwise make
                 // scrolling impossible, cancelling it within milliseconds.
                 // Follow the retiring lines so the same text stays on screen.
-                let max = self.term.grid.scrollback.len() as f32;
+                let max = self.scroll_max();
                 self.scroll.shift(retired, max);
                 self.term.grid.view_offset = self.scroll.offset();
                 self.needs_redraw = true;
@@ -200,7 +208,7 @@ impl App {
             .clamp(0.0, 0.1);
         self.last_frame = Some(now);
 
-        let max = self.term.grid.scrollback.len() as f32;
+        let max = self.scroll_max();
         let moving = self.scroll.step(dt, max);
 
         if self.term.grid.view_offset != self.scroll.offset() {
@@ -237,6 +245,19 @@ impl App {
         }
     }
 
+    /// How far back the view may go. The alternate screen keeps no history of
+    /// its own, and showing the primary screen's scrollback above alt-screen
+    /// rows would splice two unrelated buffers together — so while a
+    /// full-screen program is up, there is nowhere to scroll.
+    #[inline]
+    fn scroll_max(&self) -> f32 {
+        if self.term.grid.in_alt() {
+            0.0
+        } else {
+            self.term.grid.scrollback.len() as f32
+        }
+    }
+
     /// Scroll by a number of lines. Positive moves back into history.
     fn scroll_by(&mut self, lines: f32) {
         self.scroll.nudge(lines);
@@ -244,7 +265,7 @@ impl App {
     }
 
     fn scroll_to(&mut self, lines: f32) {
-        let max = self.term.grid.scrollback.len() as f32;
+        let max = self.scroll_max();
         self.scroll.jump_to(lines, max);
         self.needs_redraw = true;
     }
@@ -296,7 +317,10 @@ impl App {
             Some(l) => l.cell_at(col),
             None => col,
         };
-        (row, cell)
+        // Return an absolute line, so a selection stays on the text it was
+        // dragged over even as the view scrolls or output arrives.
+        let abs = (self.term.grid.viewport_top() + row as isize).max(0) as usize;
+        (abs, cell)
     }
 
     fn paste(&mut self, text: &str) {
@@ -333,15 +357,39 @@ impl App {
         if !self.mouse_grabbed() {
             return;
         }
-        let seq = crate::mouse::encode(
+        // Never report a position inside the scrollback: the application knows
+        // nothing about our history and would act on the wrong cell.
+        if self.term.grid.view_offset != 0 {
+            return;
+        }
+        let Some(seq) = crate::mouse::encode(
             button,
             pressed,
             row,
             col,
             self.modifiers,
             self.term.modes.contains(Modes::MOUSE_SGR),
-        );
+        ) else {
+            return;
+        };
         self.write_pty(&seq);
+    }
+
+    /// Report pointer motion, for the drag (1002) and any-motion (1003) modes.
+    ///
+    /// These were previously accepted as modes but never honoured, so an
+    /// application that asked for them saw a dead mouse.
+    fn motion_report(&mut self, row: usize, cell: usize) {
+        use crate::mouse::{BTN_NONE, MOTION};
+        let dragging = self.mouse_held.is_some();
+        if self.term.modes.contains(Modes::MOUSE_MOTION) {
+            let b = self.mouse_held.unwrap_or(BTN_NONE);
+            self.mouse_report(MOTION + b, true, row, cell);
+        } else if dragging && self.term.modes.contains(Modes::MOUSE_DRAG) {
+            // 1002 reports motion only while a button is down.
+            let b = self.mouse_held.unwrap_or(BTN_NONE);
+            self.mouse_report(MOTION + b, true, row, cell);
+        }
     }
 }
 
@@ -536,6 +584,11 @@ impl ApplicationHandler<Wake> for App {
                     MouseButton::Right => 2,
                     _ => return,
                 };
+                if state == ElementState::Pressed {
+                    self.mouse_held = Some(btn);
+                } else {
+                    self.mouse_held = None;
+                }
                 if self.mouse_grabbed() {
                     self.mouse_report(btn, state == ElementState::Pressed, row, cell);
                     return;
@@ -572,6 +625,10 @@ impl ApplicationHandler<Wake> for App {
                 let hit = self.hit_test(position);
                 if hit != self.mouse_cell {
                     self.mouse_cell = hit;
+                    if self.mouse_grabbed() {
+                        self.motion_report(hit.0, hit.1);
+                        return;
+                    }
                     if self.selecting {
                         if let Some(s) = &mut self.selection {
                             s.end = hit;
@@ -580,33 +637,58 @@ impl ApplicationHandler<Wake> for App {
                     }
                 }
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                // `lines` is in text lines; a discrete wheel notch gets the
-                // usual three-line multiplier, a trackpad's pixel delta does
-                // not — tripling a continuous gesture makes it unusable.
-                let lines = match delta {
-                    MouseScrollDelta::LineDelta(_, y) => y * 3.0,
+            WindowEvent::MouseWheel { delta, phase, .. } => {
+                // A gesture starting fresh must not inherit a stale remainder.
+                if phase == TouchPhase::Started {
+                    self.wheel_remainder = 0.0;
+                }
+                let grabbed = self.mouse_grabbed();
+                // The multiplier is a convenience for discrete wheel notches.
+                // It must not apply to a trackpad's continuous deltas, nor when
+                // the movement is being reported to an application — inflating
+                // a report tells the program the user scrolled further than
+                // they did.
+                let raw = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => {
+                        if grabbed {
+                            y
+                        } else {
+                            y * 3.0
+                        }
+                    }
                     MouseScrollDelta::PixelDelta(p) => {
                         p.y as f32 / self.fonts.cell_h.max(1.0)
                     }
                 };
-                if lines == 0.0 {
+                if raw == 0.0 {
                     return;
                 }
+                // Carry sub-line movement across events, discarding the
+                // remainder on a direction change so a stale opposite-sign
+                // residue cannot swallow the first notch of the new direction.
+                if raw.signum() != self.wheel_remainder.signum() {
+                    self.wheel_remainder = 0.0;
+                }
+                self.wheel_remainder += raw;
 
-                // 1. Shift bypasses the application entirely. Without this
-                //    escape hatch there is no way to reach the scrollback while
-                //    a program has the mouse grabbed.
                 if self.modifiers.shift_key() {
+                    // Shift is the escape hatch: never report, always scroll
+                    // our own history. Consume the remainder wholesale, since
+                    // the scroller carries fractions itself.
+                    let lines = std::mem::take(&mut self.wheel_remainder);
                     self.scroll_wheel(lines);
                     return;
                 }
 
-                // 2. If the application asked for mouse events, the wheel
-                //    belongs to it. This has to come before the alt-screen
-                //    check: turning the wheel into arrow keys for a program
-                //    that binds them to history edits the user's input.
-                if self.mouse_grabbed() {
+                // Whole lines only from here; the fraction stays banked.
+                let lines = self.wheel_remainder.trunc();
+                if lines == 0.0 {
+                    return;
+                }
+                self.wheel_remainder -= lines;
+                let ticks = (lines.abs() as usize).clamp(1, 32);
+
+                if grabbed {
                     let button = if lines > 0.0 {
                         crate::mouse::BTN_WHEEL_UP
                     } else {
@@ -614,24 +696,28 @@ impl ApplicationHandler<Wake> for App {
                     };
                     let (row, cell) = self.mouse_cell;
                     // One report per line, which is how applications see wheel
-                    // acceleration. The wheel is press-only; there is no
-                    // release to send.
-                    let ticks = (lines.abs().round() as usize).clamp(1, 10);
+                    // acceleration. The wheel is press-only.
                     for _ in 0..ticks {
                         self.mouse_report(button, true, row, cell);
                     }
                     return;
                 }
 
-                // 3. A full-screen program with no mouse grab: offer arrow
-                //    keys, which is how `less` and `man` scroll. Off by
-                //    request, since it is indistinguishable from typing.
                 if self.term.grid.in_alt() {
-                    if self.cfg.alternate_scroll {
-                        let n = (lines.abs().round() as usize).clamp(1, 10);
-                        let seq: &[u8] = if lines > 0.0 { b"\x1b[A" } else { b"\x1b[B" };
-                        let mut buf = Vec::with_capacity(n * 3);
-                        for _ in 0..n {
+                    // A full-screen program with no mouse grab: offer cursor
+                    // keys, which is how `less` and `man` scroll.
+                    if self.cfg.alternate_scroll && self.term.modes.contains(Modes::ALT_SCROLL) {
+                        // Honour DECCKM: an application that put the keypad in
+                        // application mode expects SS3, not CSI.
+                        let app = self.term.modes.contains(Modes::APP_CURSOR);
+                        let seq: &[u8] = match (lines > 0.0, app) {
+                            (true, true) => b"\x1bOA",
+                            (true, false) => b"\x1b[A",
+                            (false, true) => b"\x1bOB",
+                            (false, false) => b"\x1b[B",
+                        };
+                        let mut buf = Vec::with_capacity(ticks * 3);
+                        for _ in 0..ticks {
                             buf.extend_from_slice(seq);
                         }
                         self.write_pty(&buf);
@@ -639,7 +725,6 @@ impl ApplicationHandler<Wake> for App {
                     return;
                 }
 
-                // 4. Otherwise it is ours to scroll.
                 self.scroll_wheel(lines);
             }
             WindowEvent::RedrawRequested => {
