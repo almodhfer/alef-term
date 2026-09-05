@@ -196,8 +196,27 @@ impl Renderer {
 
         for r in 0..rows {
             let row = term.grid.viewport_row(r);
-            let layout =
-                self.layouter.layout_row(row, cols, fonts, term.bidi_mode, bidi_on);
+            // Joining context across a soft wrap: a word broken by the right
+            // margin has not ended, so its letters must still take their joined
+            // forms on both sides of the break.
+            let pre = if r > 0 && term.grid.viewport_row(r - 1).wrapped {
+                row_tail(term.grid.viewport_row(r - 1), cols)
+            } else {
+                String::new()
+            };
+            let post = if row.wrapped && r + 1 < rows {
+                row_head(term.grid.viewport_row(r + 1), cols)
+            } else {
+                String::new()
+            };
+            let layout = self.layouter.layout_row_ctx(
+                row,
+                cols,
+                fonts,
+                term.bidi_mode,
+                bidi_on,
+                crate::layout::RowContext { pre: &pre, post: &post },
+            );
             let y = self.pad_y + r as f32 * cell_h;
 
             // --- backgrounds, in visual column order ---
@@ -352,4 +371,36 @@ impl Renderer {
             }
         }
     }
+}
+
+/// Characters to hand the shaper as context. Two is enough: a cursive form
+/// depends only on its immediate neighbours.
+const CONTEXT_CHARS: usize = 2;
+
+/// The last few characters of a row, for use as shaping pre-context.
+fn row_tail(row: &crate::grid::Row, cols: usize) -> String {
+    let end = row.cells.len().min(cols);
+    let mut out: Vec<char> = Vec::new();
+    for cell in row.cells[..end].iter().rev() {
+        if cell.attrs.contains(Attrs::WIDE_SPACER) {
+            continue;
+        }
+        out.push(cell.ch);
+        if out.len() == CONTEXT_CHARS {
+            break;
+        }
+    }
+    out.reverse();
+    out.into_iter().collect()
+}
+
+/// The first few characters of a row, for use as shaping post-context.
+fn row_head(row: &crate::grid::Row, cols: usize) -> String {
+    row.cells
+        .iter()
+        .take(cols)
+        .filter(|c| !c.attrs.contains(Attrs::WIDE_SPACER))
+        .take(CONTEXT_CHARS)
+        .map(|c| c.ch)
+        .collect()
 }

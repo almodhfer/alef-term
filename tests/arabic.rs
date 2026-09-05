@@ -243,3 +243,63 @@ fn arabic_is_not_snapped_so_letters_can_join() {
     let tight = xs.windows(2).any(|w| w[1] - w[0] < fonts.cell_w * 0.9);
     assert!(tight, "Arabic glyphs are on the cell pitch; joins would be broken");
 }
+
+/// Lay out a row with explicit joining context, as the renderer does across a
+/// soft wrap.
+fn layout_ctx(
+    text: &str,
+    cols: usize,
+    pre: &str,
+    post: &str,
+) -> arabic_term::layout::RowLayout {
+    use arabic_term::layout::RowContext;
+    let mut fonts = Fonts::new(16.0, None).unwrap();
+    let mut t = Terminal::new(3, cols, 10);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, text.as_bytes());
+    let mut l = Layouter::new();
+    l.layout_row_ctx(
+        &t.grid.screen.rows[0],
+        cols,
+        &mut fonts,
+        BidiMode::ForceLtr,
+        true,
+        RowContext { pre, post },
+    )
+}
+
+#[test]
+fn joining_survives_a_soft_wrap() {
+    // "بالعالم" broken by the right margin into "بالع" + "الم". The ع at the
+    // end of the first row must take its MEDIAL form, because the word did not
+    // end — only the display line did.
+    let no_ctx = layout_ctx("بالع", 12, "", "");
+    let wrapped = layout_ctx("بالع", 12, "", "الم");
+
+    let last_of = |l: &arabic_term::layout::RowLayout| {
+        // Cell 3 is the ع; find the glyph drawn for it.
+        l.glyphs.iter().find(|g| g.cell == 3).map(|g| g.glyph)
+    };
+    let isolated_end = last_of(&no_ctx).expect("glyph for ع");
+    let joined_end = last_of(&wrapped).expect("glyph for ع");
+    assert_ne!(
+        isolated_end, joined_end,
+        "ع should take a different (medial) form when the word continues on the next row"
+    );
+}
+
+#[test]
+fn joining_context_applies_from_the_previous_row_too() {
+    // The other side of the same break: "الم" continues a word, so its ا must
+    // not be shaped as a word-initial form.
+    let alone = layout_ctx("الم", 12, "", "");
+    let continued = layout_ctx("الم", 12, "بالع", "");
+    let first_of = |l: &arabic_term::layout::RowLayout| {
+        l.glyphs.iter().find(|g| g.cell == 0).map(|g| g.glyph)
+    };
+    assert_ne!(
+        first_of(&alone).expect("glyph"),
+        first_of(&continued).expect("glyph"),
+        "ا should join backwards to the previous row"
+    );
+}

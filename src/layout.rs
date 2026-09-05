@@ -38,6 +38,20 @@ pub struct PositionedGlyph {
     pub cell: usize,
 }
 
+/// Text surrounding a row, used only to give the shaper joining context.
+///
+/// When a line soft-wraps mid-word the letters at the break still have to take
+/// their joined forms — the word did not end, the display line did. Passing the
+/// neighbouring text as shaping context gets the contextual forms right without
+/// laying the paragraph out as one unit.
+#[derive(Clone, Copy, Default)]
+pub struct RowContext<'a> {
+    /// Text logically preceding this row (tail of the row that wrapped into it).
+    pub pre: &'a str,
+    /// Text logically following this row (head of the row it wraps into).
+    pub post: &'a str,
+}
+
 #[derive(Default)]
 pub struct RowLayout {
     pub glyphs: Vec<PositionedGlyph>,
@@ -70,6 +84,11 @@ struct Item {
     bstart: usize,
 }
 
+/// How much surrounding text to hand the shaper as joining context. A cursive
+/// form depends only on its immediate neighbours, so a couple of characters is
+/// plenty.
+const CONTEXT_CHARS: usize = 2;
+
 /// Explicit bidi controls and joiners. These take part in bidi resolution but
 /// must never reach the shaper, which would emit `.notdef` boxes for them.
 #[inline]
@@ -83,11 +102,19 @@ pub struct Layouter {
     text: String,
     items: Vec<Item>,
     buf: Option<rustybuzz::UnicodeBuffer>,
+    pre_context: String,
+    post_context: String,
 }
 
 impl Layouter {
     pub fn new() -> Self {
-        Layouter { text: String::new(), items: Vec::new(), buf: Some(rustybuzz::UnicodeBuffer::new()) }
+        Layouter {
+            text: String::new(),
+            items: Vec::new(),
+            buf: Some(rustybuzz::UnicodeBuffer::new()),
+            pre_context: String::new(),
+            post_context: String::new(),
+        }
     }
 
     pub fn layout_row(
@@ -98,6 +125,22 @@ impl Layouter {
         mode: BidiMode,
         bidi_enabled: bool,
     ) -> RowLayout {
+        self.layout_row_ctx(row, cols, fonts, mode, bidi_enabled, RowContext::default())
+    }
+
+    pub fn layout_row_ctx(
+        &mut self,
+        row: &Row,
+        cols: usize,
+        fonts: &mut Fonts,
+        mode: BidiMode,
+        bidi_enabled: bool,
+        ctx: RowContext<'_>,
+    ) -> RowLayout {
+        self.pre_context.clear();
+        self.pre_context.push_str(ctx.pre);
+        self.post_context.clear();
+        self.post_context.push_str(ctx.post);
         self.items.clear();
 
         // --- 1. Collect logical characters. The trailing half of a wide
@@ -369,6 +412,45 @@ impl Layouter {
 
             let mut buf = self.buf.take().unwrap_or_default();
             buf.clear();
+
+            let first = *g.items.first().unwrap();
+            let last = *g.items.last().unwrap();
+            let cursive = g.slot == Slot::Arabic;
+
+            // Joining context. A cursive letter's form depends on its
+            // neighbours, so a group has to be shaped knowing what sits either
+            // side of it — the next display row after a soft wrap, or the other
+            // half of a word split across font runs.
+            //
+            // rustybuzz has set_pre_context/set_post_context, but they do not
+            // reach its Arabic joining pass: shaping "بالع" with "الم" as
+            // post-context still yields the final form of ع. So the context is
+            // shaped *with* the text and its glyphs are dropped afterwards,
+            // which is the sequence the shaper would really see.
+            let ctx_base = self.items.len() as u32 + 1;
+            let mut pre_ctx = String::new();
+            let mut post_ctx = String::new();
+            if cursive {
+                for i in first.saturating_sub(CONTEXT_CHARS)..first {
+                    if let Some(it) = self.items.get(i) {
+                        pre_ctx.push(it.ch);
+                    }
+                }
+                if pre_ctx.is_empty() {
+                    pre_ctx.push_str(&self.pre_context);
+                }
+                for i in last + 1..(last + 1 + CONTEXT_CHARS).min(self.items.len()) {
+                    post_ctx.push(self.items[i].ch);
+                }
+                if post_ctx.is_empty() {
+                    post_ctx.push_str(&self.post_context);
+                }
+            }
+
+            for c in pre_ctx.chars() {
+                buf.add(c, ctx_base);
+            }
+
             // Cluster ids are item indices, so glyphs map straight back to
             // cells without a byte-offset table. Bidi controls take part in
             // resolution but are never shaped.
@@ -392,16 +474,41 @@ impl Layouter {
                 self.buf = Some(buf);
                 continue;
             }
+            for c in post_ctx.chars() {
+                buf.add(c, ctx_base);
+            }
+
             buf.set_direction(if rtl {
                 rustybuzz::Direction::RightToLeft
             } else {
                 rustybuzz::Direction::LeftToRight
             });
+            if cursive {
+                buf.set_script(rustybuzz::script::ARABIC);
+            }
             let shaped = rustybuzz::shape(&fonts.faces[font].hb, &[], buf);
 
             let infos = shaped.glyph_infos();
             let poss = shaped.glyph_positions();
-            let natural: f32 = poss.iter().map(|p| p.x_advance as f32 * scale).sum();
+
+            // Drop the context glyphs, keeping the pen offsets the real glyphs
+            // were shaped at so their relative positions survive.
+            let is_ctx = |k: usize| infos[k].cluster >= ctx_base;
+            let mut kept: Vec<(usize, f32)> = Vec::with_capacity(infos.len());
+            let mut walk = 0.0f32;
+            for k in 0..infos.len() {
+                if !is_ctx(k) {
+                    kept.push((k, walk));
+                }
+                walk += poss[k].x_advance as f32 * scale;
+            }
+            if kept.is_empty() {
+                self.buf = Some(shaped.clear());
+                continue;
+            }
+            let origin = kept[0].1;
+            let natural: f32 =
+                kept.iter().map(|&(k, _)| poss[k].x_advance as f32 * scale).sum();
 
             let (span_x, span_w) = spans[gi];
 
@@ -414,15 +521,14 @@ impl Layouter {
             //
             // Arabic is exempt because snapping is exactly what tears cursive
             // joins apart: a word has to be placed as one piece.
-            let cursive = g.slot == Slot::Arabic;
             if !cursive {
                 let mut i = 0usize;
-                while i < infos.len() {
-                    let cl = infos[i].cluster;
+                while i < kept.len() {
+                    let cl = infos[kept[i].0].cluster;
                     let mut j = i;
                     let mut adv = 0.0f32;
-                    while j < infos.len() && infos[j].cluster == cl {
-                        adv += poss[j].x_advance as f32 * scale;
+                    while j < kept.len() && infos[kept[j].0].cluster == cl {
+                        adv += poss[kept[j].0].x_advance as f32 * scale;
                         j += 1;
                     }
                     let item = self.items.get(cl as usize).unwrap_or(&self.items[g.items[0]]);
@@ -432,7 +538,7 @@ impl Layouter {
                     // Centre the cluster in its cell so the rounding slack is
                     // split evenly rather than pushed to one side.
                     let mut pen = col as f32 * cell_w + (cell_span - adv) * 0.5;
-                    for k in i..j {
+                    for &(k, _) in &kept[i..j] {
                         let inkless = item.ch == ' ' && item.marks.is_empty();
                         if !inkless && !crate::boxdraw::is_procedural(item.ch) {
                             out.glyphs.push(PositionedGlyph {
@@ -460,36 +566,35 @@ impl Layouter {
             // keeps the word's shape and just sets it slightly smaller. Letting
             // it overhang is not an option between words — the neighbour's ink
             // would start before this one ends and swallow the space.
-            let (scale, px, natural) = if natural > span_w && natural > 0.0 {
+            let (scale, px, natural, shrink) = if natural > span_w && natural > 0.0 {
                 let k = span_w / natural;
-                (scale * k, px * k, span_w)
+                (scale * k, px * k, span_w, k)
             } else {
-                (scale, px, natural)
+                (scale, px, natural, 1.0f32)
             };
 
             // Anchor at the group's leading edge: right for RTL, left for LTR.
             // Advances are otherwise used verbatim, so GPOS mark anchoring
             // places harakat exactly where the font intends.
-            let mut pen = if rtl { span_x + (span_w - natural).max(0.0) } else { span_x };
+            let base = if rtl { span_x + (span_w - natural).max(0.0) } else { span_x };
 
-            for (info, p) in infos.iter().zip(poss) {
-                let src = info.cluster as usize;
+            for &(k, at) in &kept {
+                let src = infos[k].cluster as usize;
                 let item = self.items.get(src).unwrap_or(&self.items[g.items[0]]);
                 let cell = &row.cells[item.cell];
                 let inkless = item.ch == ' ' && item.marks.is_empty();
                 if !inkless && !crate::boxdraw::is_procedural(item.ch) {
                     out.glyphs.push(PositionedGlyph {
                         font,
-                        glyph: info.glyph_id as u16,
-                        x: pen + p.x_offset as f32 * scale,
-                        y: p.y_offset as f32 * scale,
+                        glyph: infos[k].glyph_id as u16,
+                        x: base + (at - origin) * shrink + poss[k].x_offset as f32 * scale,
+                        y: poss[k].y_offset as f32 * scale,
                         px,
                         fg: cell.fg,
                         attrs: cell.attrs,
                         cell: item.cell,
                     });
                 }
-                pen += p.x_advance as f32 * scale;
             }
             self.buf = Some(shaped.clear());
         }
