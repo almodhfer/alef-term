@@ -1,0 +1,804 @@
+//! Terminal state: VT/ANSI interpretation on top of the logical grid.
+
+use crate::color::{Color, Rgb};
+use crate::grid::{Attrs, Cell, Grid, Row, Screen};
+use unicode_width::UnicodeWidthChar;
+use vte::{Params, Perform};
+
+bitflags::bitflags! {
+    /// DEC private and ANSI modes we actually act on.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub struct Modes: u32 {
+        const AUTOWRAP        = 1 << 0;  // DECAWM  (?7)
+        const CURSOR_VISIBLE  = 1 << 1;  // DECTCEM (?25)
+        const ORIGIN          = 1 << 2;  // DECOM   (?6)
+        const APP_CURSOR      = 1 << 3;  // DECCKM  (?1)
+        const APP_KEYPAD      = 1 << 4;  // DECNKM  (?66)
+        const BRACKETED_PASTE = 1 << 5;  // (?2004)
+        const MOUSE_CLICK     = 1 << 6;  // (?1000)
+        const MOUSE_DRAG      = 1 << 7;  // (?1002)
+        const MOUSE_MOTION    = 1 << 8;  // (?1003)
+        const MOUSE_SGR       = 1 << 9;  // (?1006)
+        const FOCUS_EVENTS    = 1 << 10; // (?1004)
+        const REVERSE_VIDEO   = 1 << 11; // DECSCNM (?5)
+        const INSERT          = 1 << 12; // IRM     (4)
+        const LNM             = 1 << 13; // (20) newline mode
+        /// Terminal bidi: reorder rows for display (our own default-on mode,
+        /// toggled by the private mode ?8888 so scripts can opt out).
+        const BIDI            = 1 << 14;
+    }
+}
+
+impl Default for Modes {
+    fn default() -> Self {
+        Modes::AUTOWRAP | Modes::CURSOR_VISIBLE | Modes::BIDI
+    }
+}
+
+/// Base paragraph direction policy for rendering.
+///
+/// The default is deliberately **not** auto-detection. Deriving base direction
+/// from row content makes a line's alignment a function of what happens to be
+/// on it: a prompt jumps between edges as you type, `git log --graph` loses its
+/// gutter, and any table whose first strong character is Arabic flips whole.
+/// Pinning the base to LTR keeps the frame still while RTL runs reorder inside
+/// it — which is what actually reads correctly. A fully-RTL workflow can select
+/// `ForceRtl`, and applications can still request RTL inline with RLM/RLE/RLI.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum BidiMode {
+    /// Base level pinned to LTR; RTL runs still reorder within the line.
+    #[default]
+    ForceLtr,
+    /// Base level pinned to RTL: the whole screen reads right-to-left.
+    ForceRtl,
+    /// Detect per row from the first strong character (UAX#9 P2/P3).
+    Auto,
+}
+
+pub struct Terminal {
+    pub grid: Grid,
+    pub modes: Modes,
+    pub bidi_mode: BidiMode,
+    pub title: String,
+    /// Bytes to send back up the PTY (device reports, mouse, focus events).
+    pub replies: Vec<u8>,
+    /// Set whenever the visible content changed and a redraw is needed.
+    pub damaged: bool,
+    /// Current OSC 8 hyperlink, applied to printed cells.
+    link: Option<Box<str>>,
+    /// True when charset G0 is the DEC line-drawing set (ESC ( 0).
+    dec_graphics: bool,
+    tab_stops: Vec<bool>,
+    palette_overrides: Vec<(u8, Rgb)>,
+}
+
+impl Terminal {
+    pub fn new(rows: usize, cols: usize, scrollback: usize) -> Self {
+        Terminal {
+            grid: Grid::new(rows, cols, scrollback),
+            modes: Modes::default(),
+            bidi_mode: BidiMode::default(),
+            title: String::from("arabic-term"),
+            replies: Vec::new(),
+            damaged: true,
+            link: None,
+            dec_graphics: false,
+            tab_stops: default_tabs(cols),
+            palette_overrides: Vec::new(),
+        }
+    }
+
+    pub fn take_palette_overrides(&mut self) -> Vec<(u8, Rgb)> {
+        std::mem::take(&mut self.palette_overrides)
+    }
+
+    pub fn resize(&mut self, rows: usize, cols: usize) {
+        self.grid.resize(rows, cols);
+        self.tab_stops = default_tabs(cols);
+        self.damaged = true;
+    }
+
+    #[inline]
+    fn screen(&mut self) -> &mut Screen {
+        &mut self.grid.screen
+    }
+
+    #[inline]
+    fn cols(&self) -> usize {
+        self.grid.cols
+    }
+
+    #[inline]
+    fn rows(&self) -> usize {
+        self.grid.rows
+    }
+
+    /// Cursor row bounds, honouring DECOM (origin mode confines to the region).
+    fn row_bounds(&self) -> (usize, usize) {
+        if self.modes.contains(Modes::ORIGIN) {
+            (self.grid.screen.scroll_top, self.grid.screen.scroll_bot)
+        } else {
+            (0, self.rows())
+        }
+    }
+
+    fn goto(&mut self, row: usize, col: usize) {
+        let (top, bot) = self.row_bounds();
+        let cols = self.cols();
+        let row = (top + row).min(bot.saturating_sub(1));
+        self.screen().cursor.row = row;
+        self.screen().cursor.col = col.min(cols.saturating_sub(1));
+        self.screen().cursor.pending_wrap = false;
+    }
+
+    fn linefeed(&mut self) {
+        let bot = self.grid.screen.scroll_bot;
+        let bg = self.grid.screen.cursor.bg;
+        if self.grid.screen.cursor.row + 1 >= bot {
+            self.grid.scroll_up(1, bg);
+        } else {
+            self.grid.screen.cursor.row += 1;
+        }
+        self.grid.screen.cursor.pending_wrap = false;
+    }
+
+    /// Reverse index: move up, scrolling the region down at the top margin.
+    fn reverse_index(&mut self) {
+        let top = self.grid.screen.scroll_top;
+        let bg = self.grid.screen.cursor.bg;
+        if self.grid.screen.cursor.row == top {
+            self.grid.scroll_down(1, bg);
+        } else {
+            self.grid.screen.cursor.row = self.grid.screen.cursor.row.saturating_sub(1);
+        }
+    }
+
+    fn wrap_line(&mut self) {
+        let row = self.grid.screen.cursor.row;
+        self.grid.screen.rows[row].wrapped = true;
+        self.grid.screen.cursor.col = 0;
+        self.linefeed();
+    }
+
+    fn enter_alt_screen(&mut self) {
+        if self.grid.alt.is_some() {
+            return;
+        }
+        let rows = self.rows();
+        let cols = self.cols();
+        let fresh = Screen::new(rows, cols);
+        let primary = std::mem::replace(&mut self.grid.screen, fresh);
+        self.grid.alt = Some(primary);
+        self.grid.view_offset = 0;
+    }
+
+    fn leave_alt_screen(&mut self) {
+        if let Some(primary) = self.grid.alt.take() {
+            self.grid.screen = primary;
+        }
+        self.grid.view_offset = 0;
+    }
+
+    /// Erase a span of the current row, inheriting the active background.
+    fn erase_in_row(&mut self, row: usize, range: std::ops::Range<usize>) {
+        let bg = self.grid.screen.cursor.bg;
+        let cols = self.cols();
+        if let Some(r) = self.grid.screen.rows.get_mut(row) {
+            for c in &mut r.cells[range.start.min(cols)..range.end.min(cols)] {
+                c.reset(bg);
+            }
+        }
+    }
+
+    fn set_mode(&mut self, private: bool, n: u16, on: bool) {
+        let flag = match (private, n) {
+            (true, 1) => Modes::APP_CURSOR,
+            (true, 5) => Modes::REVERSE_VIDEO,
+            (true, 6) => {
+                // DECOM also homes the cursor into the region.
+                self.modes.set(Modes::ORIGIN, on);
+                let top = if on { self.grid.screen.scroll_top } else { 0 };
+                self.grid.screen.cursor.row = top;
+                self.grid.screen.cursor.col = 0;
+                return;
+            }
+            (true, 7) => Modes::AUTOWRAP,
+            (true, 25) => Modes::CURSOR_VISIBLE,
+            (true, 66) => Modes::APP_KEYPAD,
+            (true, 1000) => Modes::MOUSE_CLICK,
+            (true, 1002) => Modes::MOUSE_DRAG,
+            (true, 1003) => Modes::MOUSE_MOTION,
+            (true, 1004) => Modes::FOCUS_EVENTS,
+            (true, 1006) => Modes::MOUSE_SGR,
+            (true, 2004) => Modes::BRACKETED_PASTE,
+            (true, 8888) => Modes::BIDI,
+            (true, 47) | (true, 1047) | (true, 1049) => {
+                if on {
+                    if n == 1049 {
+                        self.grid.screen.saved_cursor = self.grid.screen.cursor;
+                    }
+                    self.enter_alt_screen();
+                } else {
+                    self.leave_alt_screen();
+                    if n == 1049 {
+                        self.grid.screen.cursor = self.grid.screen.saved_cursor;
+                    }
+                }
+                self.damaged = true;
+                return;
+            }
+            (true, 1048) => {
+                if on {
+                    self.grid.screen.saved_cursor = self.grid.screen.cursor;
+                } else {
+                    self.grid.screen.cursor = self.grid.screen.saved_cursor;
+                }
+                return;
+            }
+            (false, 4) => Modes::INSERT,
+            (false, 20) => Modes::LNM,
+            _ => return,
+        };
+        self.modes.set(flag, on);
+    }
+
+    fn sgr(&mut self, params: &Params) {
+        let mut iter = params.iter();
+        // A bare `ESC [ m` is SGR 0.
+        if params.is_empty() {
+            let c = &mut self.grid.screen.cursor;
+            c.attrs = Attrs::empty();
+            c.fg = Color::Default;
+            c.bg = Color::Default;
+            return;
+        }
+        while let Some(p) = iter.next() {
+            let n = p[0];
+            // Colon-form (38:2::r:g:b / 38:5:n) carries subparams in the same
+            // slice; semicolon-form spreads them over the following params.
+            match n {
+                38 | 48 | 58 => {
+                    let color = if p.len() > 1 {
+                        parse_color_subparams(&p[1..])
+                    } else {
+                        parse_color_semicolon(&mut iter)
+                    };
+                    if let Some(col) = color {
+                        let c = &mut self.grid.screen.cursor;
+                        match n {
+                            38 => c.fg = col,
+                            48 => c.bg = col,
+                            _ => {}
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let c = &mut self.grid.screen.cursor;
+            match n {
+                0 => {
+                    c.attrs = Attrs::empty();
+                    c.fg = Color::Default;
+                    c.bg = Color::Default;
+                }
+                1 => c.attrs.insert(Attrs::BOLD),
+                2 => c.attrs.insert(Attrs::DIM),
+                3 => c.attrs.insert(Attrs::ITALIC),
+                4 => c.attrs.insert(Attrs::UNDERLINE),
+                5 | 6 => c.attrs.insert(Attrs::BLINK),
+                7 => c.attrs.insert(Attrs::INVERSE),
+                8 => c.attrs.insert(Attrs::HIDDEN),
+                9 => c.attrs.insert(Attrs::STRIKEOUT),
+                21 | 22 => c.attrs.remove(Attrs::BOLD | Attrs::DIM),
+                23 => c.attrs.remove(Attrs::ITALIC),
+                24 => c.attrs.remove(Attrs::UNDERLINE),
+                25 => c.attrs.remove(Attrs::BLINK),
+                27 => c.attrs.remove(Attrs::INVERSE),
+                28 => c.attrs.remove(Attrs::HIDDEN),
+                29 => c.attrs.remove(Attrs::STRIKEOUT),
+                30..=37 => c.fg = Color::Indexed((n - 30) as u8),
+                39 => c.fg = Color::Default,
+                40..=47 => c.bg = Color::Indexed((n - 40) as u8),
+                49 => c.bg = Color::Default,
+                90..=97 => c.fg = Color::Indexed((n - 90 + 8) as u8),
+                100..=107 => c.bg = Color::Indexed((n - 100 + 8) as u8),
+                _ => {}
+            }
+        }
+    }
+}
+
+fn default_tabs(cols: usize) -> Vec<bool> {
+    (0..cols).map(|i| i % 8 == 0 && i != 0).collect()
+}
+
+/// `38:2::r:g:b`, `38:2:r:g:b` or `38:5:n` — subparams within one param slice.
+fn parse_color_subparams(sub: &[u16]) -> Option<Color> {
+    match sub.first()? {
+        2 => {
+            // Some emitters include a colour-space id, some do not.
+            let rgb = if sub.len() >= 5 { &sub[2..5] } else { sub.get(1..4)? };
+            Some(Color::Rgb(Rgb(rgb[0] as u8, rgb[1] as u8, rgb[2] as u8)))
+        }
+        5 => Some(Color::Indexed(*sub.get(1)? as u8)),
+        _ => None,
+    }
+}
+
+/// `38;2;r;g;b` or `38;5;n` — subparams spread across following params.
+fn parse_color_semicolon<'a>(iter: &mut vte::ParamsIter<'a>) -> Option<Color> {
+    match iter.next()?[0] {
+        2 => {
+            let r = iter.next()?[0] as u8;
+            let g = iter.next()?[0] as u8;
+            let b = iter.next()?[0] as u8;
+            Some(Color::Rgb(Rgb(r, g, b)))
+        }
+        5 => Some(Color::Indexed(iter.next()?[0] as u8)),
+        _ => None,
+    }
+}
+
+/// Map ASCII to the DEC special graphics set (box drawing) when ESC ( 0 is active.
+fn dec_graphic(c: char) -> char {
+    match c {
+        '`' => '◆', 'a' => '▒', 'b' => '\u{2409}', 'c' => '\u{240c}',
+        'd' => '\u{240d}', 'e' => '\u{240a}', 'f' => '°', 'g' => '±',
+        'h' => '\u{2424}', 'i' => '\u{240b}', 'j' => '┘', 'k' => '┐',
+        'l' => '┌', 'm' => '└', 'n' => '┼', 'o' => '⎺', 'p' => '⎻',
+        'q' => '─', 'r' => '⎼', 's' => '⎽', 't' => '├', 'u' => '┤',
+        'v' => '┴', 'w' => '┬', 'x' => '│', 'y' => '≤', 'z' => '≥',
+        '{' => 'π', '|' => '≠', '}' => '£', '~' => '·',
+        _ => c,
+    }
+}
+
+impl Perform for Terminal {
+    fn print(&mut self, c: char) {
+        self.damaged = true;
+        let c = if self.dec_graphics { dec_graphic(c) } else { c };
+        let width = c.width().unwrap_or(0);
+
+        // Zero-width: a combining mark belongs to the cell already written.
+        // Arabic harakat land here, which is what keeps them off the grid as
+        // separate columns while still reaching the shaper.
+        if width == 0 {
+            let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+            let cols = self.cols();
+            let target = if col == 0 { 0 } else { col.min(cols - 1) };
+            // Step back over the spacer half of a wide character.
+            let r = &mut self.grid.screen.rows[row];
+            let mut idx = target;
+            if idx > 0 && r.cells[idx].ch == ' ' && r.cells[idx].attrs.contains(Attrs::WIDE_SPACER)
+            {
+                idx -= 1;
+            }
+            if self.grid.screen.cursor.col > 0 && !self.grid.screen.cursor.pending_wrap {
+                idx = idx.saturating_sub(1);
+            }
+            r.cells[idx].push_mark(c);
+            return;
+        }
+
+        let cols = self.cols();
+        if self.grid.screen.cursor.pending_wrap && self.modes.contains(Modes::AUTOWRAP) {
+            self.wrap_line();
+        }
+        // A double-width character will not straddle the right margin.
+        if width == 2 && self.grid.screen.cursor.col + 1 >= cols {
+            if self.modes.contains(Modes::AUTOWRAP) {
+                self.wrap_line();
+            } else {
+                return;
+            }
+        }
+
+        if self.modes.contains(Modes::INSERT) {
+            let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+            let r = &mut self.grid.screen.rows[row];
+            for _ in 0..width {
+                r.cells.insert(col, Cell::default());
+            }
+            r.cells.truncate(cols);
+        }
+
+        let cur = self.grid.screen.cursor;
+        let row = cur.row;
+        let col = cur.col;
+        let link = self.link.clone();
+        {
+            let r = &mut self.grid.screen.rows[row];
+            let cell = &mut r.cells[col];
+            cell.ch = c;
+            cell.fg = cur.fg;
+            cell.bg = cur.bg;
+            cell.attrs = cur.attrs;
+            cell.extra = None;
+            if width == 2 {
+                cell.attrs.insert(Attrs::WIDE_LEADING);
+            }
+            if let Some(l) = link {
+                cell.extra.get_or_insert_with(Default::default).link = Some(l);
+            }
+            if width == 2 && col + 1 < cols {
+                let spacer = &mut r.cells[col + 1];
+                spacer.reset(cur.bg);
+                spacer.attrs = cur.attrs | Attrs::WIDE_SPACER;
+                spacer.fg = cur.fg;
+            }
+        }
+
+        let next = col + width;
+        if next >= cols {
+            self.grid.screen.cursor.col = cols - 1;
+            self.grid.screen.cursor.pending_wrap = true;
+        } else {
+            self.grid.screen.cursor.col = next;
+        }
+    }
+
+    fn execute(&mut self, byte: u8) {
+        self.damaged = true;
+        match byte {
+            0x07 => {} // BEL
+            0x08 => {
+                // Backspace: undo a pending wrap first, then step left.
+                if self.grid.screen.cursor.pending_wrap {
+                    self.grid.screen.cursor.pending_wrap = false;
+                } else {
+                    self.grid.screen.cursor.col = self.grid.screen.cursor.col.saturating_sub(1);
+                }
+            }
+            0x09 => {
+                let cols = self.cols();
+                let mut c = self.grid.screen.cursor.col + 1;
+                while c < cols && !self.tab_stops.get(c).copied().unwrap_or(false) {
+                    c += 1;
+                }
+                self.grid.screen.cursor.col = c.min(cols - 1);
+                self.grid.screen.cursor.pending_wrap = false;
+            }
+            0x0a | 0x0b | 0x0c => {
+                self.linefeed();
+                if self.modes.contains(Modes::LNM) {
+                    self.grid.screen.cursor.col = 0;
+                }
+            }
+            0x0d => {
+                self.grid.screen.cursor.col = 0;
+                self.grid.screen.cursor.pending_wrap = false;
+            }
+            0x0e => self.dec_graphics = true,  // SO
+            0x0f => self.dec_graphics = false, // SI
+            _ => {}
+        }
+    }
+
+    fn hook(&mut self, _p: &Params, _i: &[u8], _ig: bool, _a: char) {}
+    fn put(&mut self, _byte: u8) {}
+    fn unhook(&mut self) {}
+
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        let Some(cmd) = params.first() else { return };
+        match *cmd {
+            b"0" | b"1" | b"2" => {
+                if let Some(t) = params.get(1) {
+                    self.title = String::from_utf8_lossy(t).into_owned();
+                }
+            }
+            b"4" => {
+                // OSC 4 ; index ; rgb:RR/GG/BB
+                let mut i = 1;
+                while i + 1 < params.len() {
+                    if let (Ok(idx), Some(rgb)) = (
+                        std::str::from_utf8(params[i]).unwrap_or("").parse::<u16>(),
+                        parse_xcolor(params[i + 1]),
+                    ) {
+                        if idx < 256 {
+                            self.palette_overrides.push((idx as u8, rgb));
+                        }
+                    }
+                    i += 2;
+                }
+            }
+            b"8" => {
+                // OSC 8 ; params ; URI  (empty URI closes the link)
+                self.link = match params.get(2) {
+                    Some(uri) if !uri.is_empty() => {
+                        Some(String::from_utf8_lossy(uri).into_owned().into_boxed_str())
+                    }
+                    _ => None,
+                };
+            }
+            _ => {}
+        }
+    }
+
+    fn csi_dispatch(&mut self, params: &Params, intermediates: &[u8], _ignore: bool, action: char) {
+        self.damaged = true;
+        let private = intermediates.first() == Some(&b'?');
+        // First value of each param, defaulting to 0 when omitted.
+        let arg = |i: usize| -> u16 { params.iter().nth(i).map_or(0, |p| p[0]) };
+        // Same, but with the ANSI "omitted means 1" convention.
+        let arg1 = |i: usize| -> usize { arg(i).max(1) as usize };
+
+        match action {
+            'A' => {
+                let n = arg1(0);
+                let top = self.grid.screen.scroll_top;
+                let cur = self.grid.screen.cursor.row;
+                self.grid.screen.cursor.row = cur.saturating_sub(n).max(top.min(cur));
+                self.grid.screen.cursor.pending_wrap = false;
+            }
+            'B' => {
+                let n = arg1(0);
+                let bot = self.grid.screen.scroll_bot;
+                self.grid.screen.cursor.row = (self.grid.screen.cursor.row + n).min(bot - 1);
+                self.grid.screen.cursor.pending_wrap = false;
+            }
+            'C' | 'a' => {
+                let cols = self.cols();
+                self.grid.screen.cursor.col = (self.grid.screen.cursor.col + arg1(0)).min(cols - 1);
+                self.grid.screen.cursor.pending_wrap = false;
+            }
+            'D' => {
+                self.grid.screen.cursor.col = self.grid.screen.cursor.col.saturating_sub(arg1(0));
+                self.grid.screen.cursor.pending_wrap = false;
+            }
+            'E' => {
+                let n = arg1(0);
+                let bot = self.grid.screen.scroll_bot;
+                self.grid.screen.cursor.row = (self.grid.screen.cursor.row + n).min(bot - 1);
+                self.grid.screen.cursor.col = 0;
+            }
+            'F' => {
+                let n = arg1(0);
+                self.grid.screen.cursor.row = self.grid.screen.cursor.row.saturating_sub(n);
+                self.grid.screen.cursor.col = 0;
+            }
+            'G' | '`' => {
+                let cols = self.cols();
+                self.grid.screen.cursor.col = (arg1(0) - 1).min(cols - 1);
+                self.grid.screen.cursor.pending_wrap = false;
+            }
+            'd' => {
+                let r = arg1(0) - 1;
+                let rows = self.rows();
+                self.grid.screen.cursor.row = r.min(rows - 1);
+                self.grid.screen.cursor.pending_wrap = false;
+            }
+            'H' | 'f' => {
+                let (r, c) = (arg1(0) - 1, arg1(1) - 1);
+                self.goto(r, c);
+            }
+            'J' => {
+                let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+                let (rows, cols) = (self.rows(), self.cols());
+                match arg(0) {
+                    0 => {
+                        self.erase_in_row(row, col..cols);
+                        for r in row + 1..rows {
+                            self.erase_in_row(r, 0..cols);
+                        }
+                    }
+                    1 => {
+                        self.erase_in_row(row, 0..col + 1);
+                        for r in 0..row {
+                            self.erase_in_row(r, 0..cols);
+                        }
+                    }
+                    2 | 3 => {
+                        // ED 3 also clears scrollback.
+                        if arg(0) == 3 {
+                            self.grid.scrollback.clear();
+                            self.grid.view_offset = 0;
+                        }
+                        for r in 0..rows {
+                            self.erase_in_row(r, 0..cols);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            'K' => {
+                let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+                let cols = self.cols();
+                match arg(0) {
+                    0 => self.erase_in_row(row, col..cols),
+                    1 => self.erase_in_row(row, 0..col + 1),
+                    2 => self.erase_in_row(row, 0..cols),
+                    _ => {}
+                }
+            }
+            'L' | 'M' => {
+                // IL / DL operate within the scrolling region on the cursor row.
+                let row = self.grid.screen.cursor.row;
+                let (top, bot) = (self.grid.screen.scroll_top, self.grid.screen.scroll_bot);
+                if row < top || row >= bot {
+                    return;
+                }
+                let n = arg1(0).min(bot - row);
+                let bg = self.grid.screen.cursor.bg;
+                let cols = self.cols();
+                for _ in 0..n {
+                    if action == 'L' {
+                        let mut r = self.grid.screen.rows.remove(bot - 1);
+                        r.resize(cols);
+                        r.reset(bg);
+                        self.grid.screen.rows.insert(row, r);
+                    } else {
+                        let mut r = self.grid.screen.rows.remove(row);
+                        r.resize(cols);
+                        r.reset(bg);
+                        self.grid.screen.rows.insert(bot - 1, r);
+                    }
+                }
+                self.grid.screen.cursor.col = 0;
+            }
+            'P' => {
+                // DCH
+                let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+                let cols = self.cols();
+                let n = arg1(0).min(cols - col);
+                let bg = self.grid.screen.cursor.bg;
+                let r = &mut self.grid.screen.rows[row];
+                r.cells.drain(col..col + n);
+                let mut fill = Cell::default();
+                fill.bg = bg;
+                r.cells.resize(cols, fill);
+            }
+            '@' => {
+                // ICH
+                let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+                let cols = self.cols();
+                let n = arg1(0).min(cols - col);
+                let bg = self.grid.screen.cursor.bg;
+                let r = &mut self.grid.screen.rows[row];
+                let mut fill = Cell::default();
+                fill.bg = bg;
+                for _ in 0..n {
+                    r.cells.insert(col, fill.clone());
+                }
+                r.cells.truncate(cols);
+            }
+            'X' => {
+                // ECH
+                let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+                let cols = self.cols();
+                let n = arg1(0);
+                self.erase_in_row(row, col..(col + n).min(cols));
+            }
+            'S' => {
+                let bg = self.grid.screen.cursor.bg;
+                self.grid.scroll_up(arg1(0), bg);
+            }
+            'T' => {
+                let bg = self.grid.screen.cursor.bg;
+                self.grid.scroll_down(arg1(0), bg);
+            }
+            'b' => {
+                // REP: repeat the last printed character.
+                let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+                let prev = col.saturating_sub(1);
+                let ch = self.grid.screen.rows[row].cells[prev].ch;
+                for _ in 0..arg1(0) {
+                    self.print(ch);
+                }
+            }
+            'g' => {
+                let col = self.grid.screen.cursor.col;
+                match arg(0) {
+                    0 => {
+                        if let Some(t) = self.tab_stops.get_mut(col) {
+                            *t = false;
+                        }
+                    }
+                    3 => self.tab_stops.iter_mut().for_each(|t| *t = false),
+                    _ => {}
+                }
+            }
+            'h' => {
+                for p in params.iter() {
+                    self.set_mode(private, p[0], true);
+                }
+            }
+            'l' => {
+                for p in params.iter() {
+                    self.set_mode(private, p[0], false);
+                }
+            }
+            'm' => self.sgr(params),
+            'n' => match arg(0) {
+                5 => self.replies.extend_from_slice(b"\x1b[0n"),
+                6 => {
+                    let (top, _) = self.row_bounds();
+                    let r = self.grid.screen.cursor.row - top + 1;
+                    let c = self.grid.screen.cursor.col + 1;
+                    self.replies.extend_from_slice(format!("\x1b[{r};{c}R").as_bytes());
+                }
+                _ => {}
+            },
+            'c' => self.replies.extend_from_slice(b"\x1b[?6c"), // VT102
+            'r' => {
+                let rows = self.rows();
+                let top = arg1(0) - 1;
+                let bot = if arg(1) == 0 { rows } else { arg1(1) };
+                if top < bot && bot <= rows {
+                    self.grid.screen.scroll_top = top;
+                    self.grid.screen.scroll_bot = bot;
+                    let (t, _) = self.row_bounds();
+                    self.grid.screen.cursor.row = t;
+                    self.grid.screen.cursor.col = 0;
+                }
+            }
+            's' => self.grid.screen.saved_cursor = self.grid.screen.cursor,
+            'u' => self.grid.screen.cursor = self.grid.screen.saved_cursor,
+            _ => {}
+        }
+    }
+
+    fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        self.damaged = true;
+        match (intermediates.first(), byte) {
+            (None, b'D') => self.linefeed(),
+            (None, b'E') => {
+                self.linefeed();
+                self.grid.screen.cursor.col = 0;
+            }
+            (None, b'M') => self.reverse_index(),
+            (None, b'7') => self.grid.screen.saved_cursor = self.grid.screen.cursor,
+            (None, b'8') => self.grid.screen.cursor = self.grid.screen.saved_cursor,
+            (None, b'H') => {
+                let col = self.grid.screen.cursor.col;
+                if let Some(t) = self.tab_stops.get_mut(col) {
+                    *t = true;
+                }
+            }
+            (None, b'c') => {
+                // RIS: full reset.
+                let (rows, cols) = (self.rows(), self.cols());
+                let sb = self.grid.max_scrollback;
+                *self = Terminal::new(rows, cols, sb);
+            }
+            (Some(b'('), b'0') => self.dec_graphics = true,
+            (Some(b'('), _) => self.dec_graphics = false,
+            _ => {}
+        }
+    }
+}
+
+fn parse_xcolor(spec: &[u8]) -> Option<Rgb> {
+    let s = std::str::from_utf8(spec).ok()?;
+    let hex = s.strip_prefix("rgb:")?;
+    let mut it = hex.split('/');
+    let mut comp = || -> Option<u8> {
+        let p = it.next()?;
+        let v = u32::from_str_radix(p, 16).ok()?;
+        // Scale 1/2/4-hex-digit components down to 8 bits.
+        Some(match p.len() {
+            1 => (v * 17) as u8,
+            2 => v as u8,
+            4 => (v >> 8) as u8,
+            _ => return None,
+        })
+    };
+    Some(Rgb(comp()?, comp()?, comp()?))
+}
+
+/// Feed PTY bytes through the parser into terminal state.
+pub struct Vt {
+    parser: vte::Parser,
+}
+
+impl Vt {
+    pub fn new() -> Self {
+        Vt { parser: vte::Parser::new() }
+    }
+    pub fn feed(&mut self, term: &mut Terminal, bytes: &[u8]) {
+        self.parser.advance(term, bytes);
+    }
+}
+
+#[allow(dead_code)]
+fn _assert_row(_: &Row) {}

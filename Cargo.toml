@@ -1,0 +1,28 @@
+[package]
+name = "arabic-term"
+version = "0.1.0"
+edition = "2021"
+description = "A terminal emulator that renders Arabic correctly: full bidi + contextual shaping."
+
+[dependencies]
+winit = "0.30.13"
+softbuffer = "0.4.8"
+rustybuzz = "0.20.1"
+swash = "0.2.10"
+unicode-bidi = "0.3.18"
+
+unicode-width = "0.2.2"
+unicode-normalization = "0.1.25"
+vte = "0.15.0"
+portable-pty = "0.9.0"
+fontdb = "0.24.0"
+arboard = "3.6.1"
+anyhow = "1.0"
+bitflags = "2.13"
+log = "0.4"
+env_logger = "0.11"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
