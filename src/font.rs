@@ -23,6 +23,8 @@ pub enum Slot {
     Arabic,
     /// Colour emoji.
     Emoji,
+    /// Nerd Font icons: the private-use glyphs status bars and file trees use.
+    Symbols,
     /// Last-resort coverage for anything else.
     Fallback,
 }
@@ -116,40 +118,71 @@ pub struct Fonts {
 }
 
 /// A candidate font file: path plus per-style face indices within a .ttc.
+/// A leading `~/` is expanded against the user's home directory.
 struct Candidate {
     slot: Slot,
     path: &'static str,
-    /// (regular, bold, italic, bold-italic) face indices.
+    /// (regular, bold, italic, bold-italic) face indices within the file.
     faces: [u32; 4],
+    /// Per-style file paths, when the styles are separate files rather than
+    /// faces inside one collection. Takes precedence over `path` when set.
+    style_paths: Option<[&'static str; 4]>,
+}
+
+const fn ttc(slot: Slot, path: &'static str, faces: [u32; 4]) -> Candidate {
+    Candidate { slot, path, faces, style_paths: None }
+}
+
+const fn files(slot: Slot, style_paths: [&'static str; 4]) -> Candidate {
+    Candidate { slot, path: style_paths[0], faces: [0; 4], style_paths: Some(style_paths) }
 }
 
 const CANDIDATES: &[Candidate] = &[
+    // A Nerd Font is preferred for the monospace slot: it is a good terminal
+    // face and it carries the private-use icons that status bars, file trees
+    // and workspace managers draw with. The "Mono" cut keeps those icons a
+    // single cell wide, which is what the grid needs.
+    files(
+        Slot::Mono,
+        [
+            "~/Library/Fonts/JetBrainsMonoNerdFontMono-Regular.ttf",
+            "~/Library/Fonts/JetBrainsMonoNerdFontMono-Bold.ttf",
+            "~/Library/Fonts/JetBrainsMonoNerdFontMono-Italic.ttf",
+            "~/Library/Fonts/JetBrainsMonoNerdFontMono-BoldItalic.ttf",
+        ],
+    ),
+    files(
+        Slot::Mono,
+        [
+            "~/Library/Fonts/JetBrainsMonoNLNerdFontMono-Regular.ttf",
+            "~/Library/Fonts/JetBrainsMonoNLNerdFontMono-Bold.ttf",
+            "~/Library/Fonts/JetBrainsMonoNLNerdFontMono-Italic.ttf",
+            "~/Library/Fonts/JetBrainsMonoNLNerdFontMono-BoldItalic.ttf",
+        ],
+    ),
     // Menlo.ttc carries all four styles as separate faces.
-    Candidate { slot: Slot::Mono, path: "/System/Library/Fonts/Menlo.ttc", faces: [0, 1, 2, 3] },
-    Candidate { slot: Slot::Mono, path: "/System/Library/Fonts/Monaco.ttf", faces: [0, 0, 0, 0] },
-    Candidate { slot: Slot::Mono, path: "/System/Library/Fonts/Courier.ttc", faces: [0, 1, 2, 3] },
+    ttc(Slot::Mono, "/System/Library/Fonts/Menlo.ttc", [0, 1, 2, 3]),
+    ttc(Slot::Mono, "/System/Library/Fonts/Monaco.ttf", [0, 0, 0, 0]),
+    ttc(Slot::Mono, "/System/Library/Fonts/Courier.ttc", [0, 1, 2, 3]),
     // GeezaPro.ttc has regular + bold.
-    Candidate {
-        slot: Slot::Arabic,
-        path: "/System/Library/Fonts/GeezaPro.ttc",
-        faces: [0, 1, 0, 1],
-    },
-    Candidate {
-        slot: Slot::Arabic,
-        path: "/System/Library/Fonts/Supplemental/Al Nile.ttc",
-        faces: [0, 1, 0, 1],
-    },
-    Candidate {
-        slot: Slot::Emoji,
-        path: "/System/Library/Fonts/Apple Color Emoji.ttc",
-        faces: [0, 0, 0, 0],
-    },
-    Candidate {
-        slot: Slot::Fallback,
-        path: "/System/Library/Fonts/Apple Symbols.ttf",
-        faces: [0, 0, 0, 0],
-    },
+    ttc(Slot::Arabic, "/System/Library/Fonts/GeezaPro.ttc", [0, 1, 0, 1]),
+    ttc(Slot::Arabic, "/System/Library/Fonts/Supplemental/Al Nile.ttc", [0, 1, 0, 1]),
+    ttc(Slot::Emoji, "/System/Library/Fonts/Apple Color Emoji.ttc", [0, 0, 0, 0]),
+    // Icon-only fallback, for when the monospace face is not a Nerd Font.
+    ttc(Slot::Symbols, "~/Library/Fonts/SymbolsNerdFontMono-Regular.ttf", [0, 0, 0, 0]),
+    ttc(Slot::Fallback, "/System/Library/Fonts/Apple Symbols.ttf", [0, 0, 0, 0]),
 ];
+
+/// Expand a leading `~/` against the home directory.
+fn expand(path: &str) -> std::path::PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => std::path::Path::new(&home).join(rest),
+            None => std::path::PathBuf::from(path),
+        },
+        None => std::path::PathBuf::from(path),
+    }
+}
 
 fn style_idx(s: Style) -> usize {
     match (s.bold, s.italic) {
@@ -175,20 +208,25 @@ impl Fonts {
         let mut map = HashMap::new();
 
         for cand in CANDIDATES {
-            if !std::path::Path::new(cand.path).exists() {
-                continue;
-            }
             for style in STYLES {
                 if map.contains_key(&(cand.slot, style)) {
                     continue;
                 }
-                let idx = cand.faces[style_idx(style)];
-                match Face::load(cand.path, idx) {
+                let si = style_idx(style);
+                let (path, idx) = match cand.style_paths {
+                    Some(paths) => (expand(paths[si]), 0),
+                    None => (expand(cand.path), cand.faces[si]),
+                };
+                if !path.exists() {
+                    continue;
+                }
+                let Some(path_str) = path.to_str() else { continue };
+                match Face::load(path_str, idx) {
                     Ok(f) => {
                         faces.push(f);
                         map.insert((cand.slot, style), faces.len() - 1);
                     }
-                    Err(e) => log::debug!("skipping {}#{idx}: {e}", cand.path),
+                    Err(e) => log::debug!("skipping {path_str}#{idx}: {e}"),
                 }
             }
         }
@@ -328,7 +366,7 @@ impl Fonts {
         if mono.covers(c) {
             return Slot::Mono;
         }
-        for slot in [Slot::Arabic, Slot::Emoji, Slot::Fallback] {
+        for slot in [Slot::Arabic, Slot::Symbols, Slot::Emoji, Slot::Fallback] {
             if let Some(&i) = self.map.get(&(slot, Style::default())) {
                 if self.faces[i].covers(c) {
                     return slot;

@@ -97,8 +97,18 @@ cargo build --release
 ./target/release/arabic-term
 ```
 
-Requires Rust 1.85+ and macOS (it loads Menlo and Geeza Pro, and uses the
-system clipboard).
+Requires Rust 1.85+ and macOS. Fonts are picked in this order:
+
+| Slot | Preferred | Falls back to |
+| --- | --- | --- |
+| monospace | JetBrains Mono Nerd Font Mono (`~/Library/Fonts`) | Menlo, Monaco, Courier |
+| Arabic | Geeza Pro | Al Nile |
+| icons | whatever the monospace face covers | Symbols Nerd Font Mono |
+| emoji | Apple Color Emoji | |
+
+A Nerd Font is preferred for monospace because it carries the private-use icons
+that status bars, file trees and workspace managers draw with; without one they
+render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 
 ```
 --font-size <px>        base font size (default 15)
@@ -115,8 +125,8 @@ system clipboard).
 
 ## Known limitations
 
-- **macOS only.** Font paths (Menlo, Geeza Pro) are hardcoded, and the clipboard
-  is the system one.
+- **macOS only.** Font paths are a hardcoded list (see the table above) rather
+  than a real system font query, and the clipboard is the system one.
 - **Shaping does not cross a soft wrap.** A word broken across two display rows
   is shaped as two pieces, so the letters at the break do not join.
 - **Not yet exercised interactively at length.** Everything below is covered by
@@ -141,7 +151,7 @@ propagated to the child via `TIOCSWINSZ`.
 cargo test
 ```
 
-50 tests: VT/grid behaviour, the Arabic layout itself (reordering, ligatures,
+55 tests: VT/grid behaviour, font coverage and fallback, the Arabic layout itself (reordering, ligatures,
 diacritics, mirroring, column pinning, cell-grid alignment), key encoding, and
 end-to-end tests that drive a real shell — and a real editor — over a PTY,
 including typing Arabic through the key encoder and interrupting a running
