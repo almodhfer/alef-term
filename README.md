@@ -141,6 +141,8 @@ background, cursor, selection and the 16 ANSI colours.
 | `Cmd` `+` / `-` / `0` | font size |
 | `Cmd R` | cycle base direction: LTR → RTL → auto |
 | `Cmd C` / `Cmd V` | copy / paste |
+| double / triple click | select a word / a whole line, soft wraps included |
+| `Cmd` + click | open the link under the pointer (OSC 8 or a bare URL); hold `Cmd` to see it underlined |
 | scroll wheel | smooth scrollback, or the application if it grabbed the mouse |
 | `Shift` + wheel | always the terminal's own scrollback |
 | `Shift` `PgUp` / `PgDn` | scroll by a page |
@@ -186,7 +188,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-166 tests, covering: VT and grid behaviour; font coverage and fallback; the
+173 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics

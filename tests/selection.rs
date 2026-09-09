@@ -142,3 +142,72 @@ fn a_selection_reaches_into_scrollback() {
     assert!(t.grid.scrollback.len() > 3, "content retired into scrollback");
     assert_eq!(selected_text(&t, sel((0, 0), (0, 4))), "line1");
 }
+
+mod gestures {
+    use super::term;
+    use arabic_term::selection::{logical_line, url_at, word_at, Span};
+
+    #[test]
+    fn double_click_takes_a_word() {
+        let t = term(3, 40, "hello wonderful world");
+        assert_eq!(word_at(&t, 0, 8), Some(Span { line: 0, start: 6, end: 15 }));
+        assert_eq!(word_at(&t, 0, 0), Some(Span { line: 0, start: 0, end: 5 }));
+        assert_eq!(word_at(&t, 0, 5), None, "a blank selects nothing");
+        assert_eq!(word_at(&t, 0, 30), None);
+    }
+
+    #[test]
+    fn a_word_stops_at_shell_punctuation_but_keeps_paths() {
+        let t = term(3, 40, "ls (src/main.rs) \"x\"");
+        assert_eq!(word_at(&t, 0, 6), Some(Span { line: 0, start: 4, end: 15 }));
+        assert_eq!(word_at(&t, 0, 18), Some(Span { line: 0, start: 18, end: 19 }));
+    }
+
+    #[test]
+    fn arabic_words_are_words_too() {
+        let t = term(3, 40, "قال مرحبا بالعالم");
+        let w = word_at(&t, 0, 5).unwrap();
+        assert_eq!((w.start, w.end), (4, 9));
+    }
+
+    #[test]
+    fn triple_click_takes_the_logical_line_across_soft_wraps() {
+        let t = term(6, 10, "0123456789abcdefghij_and\r\nnext");
+        assert_eq!(logical_line(&t, 0), (0, 2));
+        assert_eq!(logical_line(&t, 1), (0, 2));
+        assert_eq!(logical_line(&t, 2), (0, 2));
+        assert_eq!(logical_line(&t, 3), (3, 3));
+    }
+
+    #[test]
+    fn bare_urls_are_found_and_trailing_punctuation_dropped() {
+        let t = term(3, 60, "see https://example.com/a/b?q=1. and (http://x.org/p_(1)) now");
+        let (span, url) = url_at(&t, 0, 10).unwrap();
+        assert_eq!(url, "https://example.com/a/b?q=1");
+        assert_eq!((span.start, span.end), (4, 31));
+        let (_, url) = url_at(&t, 0, 40).unwrap();
+        assert_eq!(url, "http://x.org/p_(1)", "a bracket the URL opened is kept");
+        assert!(url_at(&t, 0, 1).is_none(), "plain words are not links");
+        assert!(url_at(&t, 0, 32).is_none(), "the dropped full stop is not part of the link");
+    }
+
+    #[test]
+    fn a_url_broken_by_the_margin_is_followed_across_rows() {
+        let t = term(4, 20, "go to https://example.com/some/long/path/here ok");
+        // "go to https://exampl" | "e.com/some/long/path" | "/here ok"
+        let (span, url) = url_at(&t, 1, 3).unwrap();
+        assert_eq!(url, "https://example.com/some/long/path/here");
+        assert_eq!((span.line, span.start, span.end), (1, 0, 20));
+        let (span, _) = url_at(&t, 2, 2).unwrap();
+        assert_eq!((span.line, span.start, span.end), (2, 0, 5));
+    }
+
+    #[test]
+    fn osc8_links_win_over_the_text() {
+        let t = term(3, 40, "\x1b]8;;https://example.com/hidden\x1b\\click here\x1b]8;;\x1b\\ plain");
+        let (span, url) = url_at(&t, 0, 3).unwrap();
+        assert_eq!(url, "https://example.com/hidden");
+        assert_eq!((span.start, span.end), (0, 10));
+        assert!(url_at(&t, 0, 12).is_none());
+    }
+}

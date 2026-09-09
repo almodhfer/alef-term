@@ -5,7 +5,7 @@ use crate::color::{Color, Palette, Rgb};
 use crate::font::{Fonts, RasterGlyph};
 use crate::grid::Attrs;
 use crate::layout::{Layouter, RowLayout};
-use crate::selection::Selection;
+use crate::selection::{Selection, Span};
 use crate::term::{CursorShape, Terminal};
 
 /// Everything about a frame that is not terminal content.
@@ -21,11 +21,20 @@ pub struct DrawOpts {
     pub cursor_shape: CursorShape,
     /// Bell flash intensity, 0 for none.
     pub bell: f32,
+    /// A link under the pointer, underlined so it reads as clickable.
+    pub hover_link: Option<Span>,
 }
 
 impl Default for DrawOpts {
     fn default() -> Self {
-        DrawOpts { selection: None, focused: true, cursor_on: true, cursor_shape: CursorShape::Block, bell: 0.0 }
+        DrawOpts {
+            selection: None,
+            focused: true,
+            cursor_on: true,
+            cursor_shape: CursorShape::Block,
+            bell: 0.0,
+            hover_link: None,
+        }
     }
 }
 
@@ -439,8 +448,13 @@ impl Renderer {
 
             // --- underline / strikeout, drawn per visual column so they run
             // continuously under reordered text ---
+            let hover = opts.hover_link.filter(|h| abs >= 0 && h.line == abs as usize);
             for (col, &cell_idx) in layout.visual_cells.iter().enumerate() {
                 let Some(cell) = row.cells.get(cell_idx) else { continue };
+                if hover.is_some_and(|h| cell_idx >= h.start && cell_idx < h.end) {
+                    let x = self.pad_x + col as f32 * cell_w;
+                    canvas.fill_rect(x, y + baseline + 2.0, cell_w, 1.0, palette.cursor);
+                }
                 if cell.attrs.intersects(Attrs::UNDERLINE | Attrs::STRIKEOUT) {
                     let fg = resolve(cell.fg, true);
                     let x = self.pad_x + col as f32 * cell_w;

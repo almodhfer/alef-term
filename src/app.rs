@@ -5,7 +5,7 @@ use crate::frame::FramePacer;
 use crate::pty::Pty;
 use crate::gpu::Gpu;
 use crate::render::{DrawOpts, Renderer};
-use crate::selection::{selected_text, Selection};
+use crate::selection::{logical_line, selected_text, url_at, word_at, Selection, Span};
 use crate::term::{BidiMode, CursorShape, Modes, Terminal, Vt};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
@@ -100,6 +100,11 @@ pub struct App {
     mouse_at: Hit,
     /// Button currently held, for drag reporting.
     mouse_held: Option<u8>,
+    /// Consecutive clicks on the same cell: 1, 2 or 3, and when the last was.
+    clicks: u8,
+    last_click: Option<(std::time::Instant, Hit)>,
+    /// The link under the pointer while Cmd is held, and its target.
+    hover_link: Option<(Span, String)>,
     clipboard: Option<arboard::Clipboard>,
     needs_redraw: bool,
     exited: bool,
@@ -123,6 +128,21 @@ pub struct App {
     blink_at: std::time::Instant,
     /// When the last bell rang, for the flash.
     bell_at: Option<std::time::Instant>,
+}
+
+/// Clicks closer together than this on the same cell count as one gesture.
+const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Hand a URL to the system's opener.
+fn open_url(url: &str) {
+    // Only the schemes url_at recognises get here; nothing shell-expanded.
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(not(target_os = "macos"))]
+    let cmd = "xdg-open";
+    if let Err(e) = std::process::Command::new(cmd).arg(url).spawn() {
+        log::warn!("could not open {url}: {e}");
+    }
 }
 
 /// Half a blink period.
@@ -201,6 +221,9 @@ impl App {
             selecting: false,
             mouse_at: Hit::default(),
             mouse_held: None,
+            clicks: 0,
+            last_click: None,
+            hover_link: None,
             clipboard: arboard::Clipboard::new().ok(),
             needs_redraw: true,
             exited: false,
@@ -231,6 +254,20 @@ impl App {
             && self.focused
             && self.term.modes.contains(Modes::CURSOR_VISIBLE)
             && self.term.grid.view_offset == 0
+    }
+
+    /// Underline the link under the pointer while Cmd is held.
+    fn update_hover(&mut self) {
+        let at = self.mouse_at;
+        let link = if self.modifiers.super_key() && !self.mouse_grabbed() {
+            url_at(&self.term, at.line, at.cell)
+        } else {
+            None
+        };
+        if link.as_ref().map(|l| l.0) != self.hover_link.as_ref().map(|l| l.0) {
+            self.needs_redraw = true;
+        }
+        self.hover_link = link;
     }
 
     /// Show the cursor and restart the blink period, as on every keystroke.
@@ -605,7 +642,10 @@ impl ApplicationHandler<Wake> for App {
                     .and_then(|w| w.current_monitor())
                     .and_then(|m| m.refresh_rate_millihertz());
             }
-            WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            WindowEvent::ModifiersChanged(m) => {
+                self.modifiers = m.state();
+                self.update_hover();
+            }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
                 self.send(s.as_bytes());
             }
@@ -719,12 +759,39 @@ impl ApplicationHandler<Wake> for App {
                 }
                 match (button, state) {
                     (MouseButton::Left, ElementState::Pressed) => {
-                        self.selecting = true;
-                        self.selection = Some(Selection {
-                            start: (at.line, at.cell),
-                            end: (at.line, at.cell),
-                            block: self.modifiers.alt_key(),
-                        });
+                        // Cmd-click follows a link instead of selecting.
+                        if self.modifiers.super_key() {
+                            if let Some((_, url)) = url_at(&self.term, at.line, at.cell) {
+                                open_url(&url);
+                                return;
+                            }
+                        }
+                        let now = std::time::Instant::now();
+                        self.clicks = match self.last_click {
+                            Some((t, h)) if h == at && now.duration_since(t) < MULTI_CLICK => (self.clicks % 3) + 1,
+                            _ => 1,
+                        };
+                        self.last_click = Some((now, at));
+                        let block = self.modifiers.alt_key();
+                        self.selection = match self.clicks {
+                            // A word; a blank cell selects nothing.
+                            2 => word_at(&self.term, at.line, at.cell).map(|w| Selection {
+                                start: (w.line, w.start),
+                                end: (w.line, w.end - 1),
+                                block: false,
+                            }),
+                            // The whole logical line, soft wraps included.
+                            3 => {
+                                let (first, last) = logical_line(&self.term, at.line);
+                                Some(Selection {
+                                    start: (first, 0),
+                                    end: (last, self.term.grid.cols.saturating_sub(1)),
+                                    block: false,
+                                })
+                            }
+                            _ => Some(Selection { start: (at.line, at.cell), end: (at.line, at.cell), block }),
+                        };
+                        self.selecting = self.clicks == 1;
                         self.needs_redraw = true;
                     }
                     (MouseButton::Left, ElementState::Released) => {
@@ -749,6 +816,7 @@ impl ApplicationHandler<Wake> for App {
                 let hit = self.hit_test(position);
                 if hit != self.mouse_at {
                     self.mouse_at = hit;
+                    self.update_hover();
                     if self.mouse_grabbed() {
                         // Viewport row, not absolute line.
                         self.motion_report(hit.row, hit.cell);
@@ -878,6 +946,7 @@ impl ApplicationHandler<Wake> for App {
                     cursor_on,
                     cursor_shape: self.cfg.cursor_shape,
                     bell,
+                    hover_link: self.hover_link.as_ref().map(|l| l.0),
                 };
                 self.renderer.draw(gpu, &self.term, &mut self.fonts, &opts);
                 let t2 = std::time::Instant::now();
