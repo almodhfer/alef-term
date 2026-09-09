@@ -126,6 +126,16 @@ render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 
 Set `ARABIC_TERM_PROFILE=1` to print per-phase frame times to stderr.
 
+### Configuration
+
+Settings live in `~/.config/arabic-term/config.toml` (or the file named by
+`$ARABIC_TERM_CONFIG` or `--config`). Every key is optional and flags override
+the file; a typo is reported on startup rather than ignored. See
+[`docs/config.example.toml`](docs/config.example.toml) for the full list: fonts,
+size, scrollback, scroll speed, cursor shape and blink, the visual bell, a
+`dark` or `light` theme, and `#rrggbb` overrides for the foreground,
+background, cursor, selection and the 16 ANSI colours.
+
 | Key | Action |
 | --- | --- |
 | `Cmd` `+` / `-` / `0` | font size |
@@ -173,7 +183,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-153 tests, covering: VT and grid behaviour; font coverage and fallback; the
+158 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics
@@ -257,6 +267,7 @@ for.
 | `src/kitty_graphics.rs` | kitty graphics protocol |
 | `src/pty.rs` | PTY and the shell process |
 | `src/gpu.rs` | GPU compositor: glyph atlas, image textures, instanced quads |
+| `src/config.rs` | the configuration file |
 | `src/app.rs` | window, input, event loop |
 
 Built on [rustybuzz] (shaping), [swash] (rasterisation), [unicode-bidi] (UAX #9),

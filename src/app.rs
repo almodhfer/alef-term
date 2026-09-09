@@ -32,6 +32,10 @@ struct Hit {
 pub struct Wake;
 
 pub struct Config {
+    /// Monospace and Arabic families to try first; `None` uses the built-in
+    /// preference lists.
+    pub font: Option<String>,
+    pub arabic_font: Option<String>,
     pub font_size: f32,
     /// `None` derives the Arabic scale from font metrics.
     pub arabic_scale: Option<f32>,
@@ -52,11 +56,14 @@ pub struct Config {
     pub cursor_blink: bool,
     /// Flash the window edge on BEL.
     pub visual_bell: bool,
+    pub palette: crate::color::Palette,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
+            font: None,
+            arabic_font: None,
             font_size: 15.0,
             arabic_scale: None,
             scrollback: 10_000,
@@ -68,6 +75,7 @@ impl Default for Config {
             cursor_shape: CursorShape::Block,
             cursor_blink: false,
             visual_bell: true,
+            palette: crate::color::Palette::dark(),
         }
     }
 }
@@ -167,8 +175,14 @@ impl Profile {
 
 impl App {
     pub fn new(cfg: Config, proxy: EventLoopProxy<Wake>) -> anyhow::Result<App> {
-        let fonts = Fonts::new(cfg.font_size, cfg.arabic_scale)?;
-        let term = Terminal::new(cfg.rows, cfg.cols, cfg.scrollback);
+        let fonts = Fonts::with_families(
+            cfg.font_size,
+            cfg.arabic_scale,
+            cfg.font.as_deref(),
+            cfg.arabic_font.as_deref(),
+        )?;
+        let mut term = Terminal::new(cfg.rows, cfg.cols, cfg.scrollback);
+        term.set_palette(cfg.palette.clone());
         Ok(App {
             cfg,
             window: None,

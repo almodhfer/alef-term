@@ -24,6 +24,8 @@ env_logger = "0.11"
 libc = "0.2"
 wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "metal"] }
 pollster = "0.4"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.5"
 
 [dev-dependencies]
 winit = "0.30.13"

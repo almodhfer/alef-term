@@ -296,6 +296,17 @@ impl Fonts {
     /// `arabic_scale` of `None` derives the scale from font metrics so that a
     /// typical Arabic advance matches the monospace cell width.
     pub fn new(size_px: f32, arabic_scale: Option<f32>) -> Result<Fonts> {
+        Self::with_families(size_px, arabic_scale, None, None)
+    }
+
+    /// As [`Fonts::new`], trying the given monospace and Arabic families
+    /// before the built-in preference lists.
+    pub fn with_families(
+        size_px: f32,
+        arabic_scale: Option<f32>,
+        mono: Option<&str>,
+        arabic: Option<&str>,
+    ) -> Result<Fonts> {
         let mut faces = Vec::new();
         let mut map = HashMap::new();
 
@@ -311,7 +322,17 @@ impl Fonts {
         }
 
         for (slot, families) in FAMILIES {
-            for family in *families {
+            let preferred = match slot {
+                Slot::Mono => mono,
+                Slot::Arabic => arabic,
+                _ => None,
+            };
+            if let Some(p) = preferred {
+                if find_face(&db, p, Style::default()).is_none() {
+                    log::warn!("configured font {p:?} not found; using the built-in list");
+                }
+            }
+            for family in preferred.into_iter().chain(families.iter().copied()) {
                 for style in STYLES {
                     if map.contains_key(&(*slot, style)) {
                         continue;

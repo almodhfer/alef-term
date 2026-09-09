@@ -6,9 +6,25 @@ fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let mut cfg = app::Config::default();
-    let mut args = std::env::args().skip(1);
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // The file first, so that flags can override it.
+    let config_path = argv
+        .iter()
+        .position(|a| a == "--config")
+        .and_then(|i| argv.get(i + 1).map(std::path::PathBuf::from))
+        .or_else(arabic_term::config::default_path);
+    if let Some(path) = &config_path {
+        match arabic_term::config::load(path).and_then(|f| f.apply(&mut cfg)) {
+            Ok(()) => {}
+            Err(e) => eprintln!("arabic-term: config: {e:#}; continuing with defaults"),
+        }
+    }
+    let mut args = argv.into_iter();
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--config" => {
+                args.next();
+            }
             "--font-size" => {
                 if let Some(v) = args.next().and_then(|v| v.parse().ok()) {
                     cfg.font_size = v;
@@ -53,7 +69,9 @@ fn main() -> anyhow::Result<()> {
                        --scroll-lines <n>     lines per wheel notch (default 3)\n  \
                        --touch-scroll <f>     trackpad scroll speed (default 3)\n  \
                        --no-alternate-scroll  do not turn the wheel into arrow\n  \
-                       \u{20}                      keys for full-screen programs\n\n\
+                       \u{20}                      keys for full-screen programs\n  \
+                       --config <path>        configuration file (default:\n  \
+                       \u{20}                      ~/.config/arabic-term/config.toml)\n\n\
                      Keys:\n  \
                        Cmd +/-/0    font size\n  \
                        Cmd R        cycle bidi base direction (auto/LTR/RTL)\n  \

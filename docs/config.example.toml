@@ -1,0 +1,31 @@
+# arabic-term configuration. Copy to ~/.config/arabic-term/config.toml.
+# Every key is optional; command-line flags override the file.
+
+# font = "JetBrainsMono Nerd Font Mono"
+# arabic_font = "Geeza Pro"
+font_size = 15
+# arabic_scale = 1.1        # default: derived from the font metrics
+scrollback = 10000
+cols = 96
+rows = 28
+
+scroll_lines = 3            # lines per wheel notch
+touch_scroll = 3            # trackpad multiplier
+alternate_scroll = true     # wheel becomes arrow keys in less, man, ...
+
+cursor_shape = "block"      # block | underline | bar
+cursor_blink = false
+visual_bell = true
+
+theme = "dark"              # dark | light
+
+[colors]
+# foreground = "#d4d9e0"
+# background = "#14161b"
+# cursor = "#62a0ea"
+# selection_background = "#2d415a"
+# selection_foreground = "#ffffff"
+# ansi = [
+#   "#1c1f26", "#e0606a", "#7cc370", "#e0b25f", "#62a0ea", "#b482dc", "#5cc0c0", "#c5cbd6",
+#   "#4a515e", "#f27d86", "#98db8c", "#f5cb7c", "#84baf5", "#cb9eef", "#79d6d6", "#e8edf5",
+# ]
