@@ -141,6 +141,7 @@ background, cursor, selection and the 16 ANSI colours.
 | `Cmd` `+` / `-` / `0` | font size |
 | `Cmd R` | cycle base direction: LTR → RTL → auto |
 | `Cmd C` / `Cmd V` | copy / paste |
+| `Cmd F` | search the scrollback; `Enter` / `Shift Enter` (or the arrows) step to older / newer hits, `Cmd G` likewise, `Esc` closes |
 | double / triple click | select a word / a whole line, soft wraps included |
 | `Cmd` + click | open the link under the pointer (OSC 8 or a bare URL); hold `Cmd` to see it underlined |
 | scroll wheel | smooth scrollback, or the application if it grabbed the mouse |
@@ -188,7 +189,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-173 tests, covering: VT and grid behaviour; font coverage and fallback; the
+183 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics
@@ -237,6 +238,18 @@ monopolize the UI with a multi-megabyte parse pass.
 Input writes run on a separate thread so a child that stops reading cannot
 freeze mouse and keyboard handling.
 
+### Search
+
+`Cmd F` opens a bar at the top right, seeded with the selection if there is
+one. Typing narrows as you go, every hit is highlighted, the view jumps to the
+nearest one above the bottom of the screen, and `Enter` walks back through
+history. Case is ignored unless the query has a capital; Arabic vowel marks in
+the query are ignored, so a word typed without harakat finds text written
+with them; a hit broken by the margin is still found and highlighted on both
+rows. The grid is flattened into one string and searched with a SIMD
+substring finder: forty thousand lines index in about 15 ms, only when the
+content changed, and a query over them takes a millisecond or two.
+
 ### Rendering
 
 Layout, shaping and glyph rasterisation happen on the CPU; only compositing
@@ -267,7 +280,8 @@ for.
 | `src/keys.rs` | key presses to terminal byte sequences |
 | `src/frame_hold.rs` | withholding frames during a synchronized update |
 | `src/scroll.rs` | scroll position and easing |
-| `src/selection.rs` | selection and copy |
+| `src/selection.rs` | selection, words, lines and links |
+| `src/search.rs` | scrollback search |
 | `src/sixel.rs` | sixel image decoding |
 | `src/kitty_graphics.rs` | kitty graphics protocol |
 | `src/pty.rs` | PTY and the shell process |

@@ -8,9 +8,18 @@ use crate::layout::{Layouter, RowLayout};
 use crate::selection::{Selection, Span};
 use crate::term::{CursorShape, Terminal};
 
+/// The search bar's contents.
+#[derive(Clone, Copy, Debug)]
+pub struct SearchBar<'a> {
+    pub query: &'a str,
+    pub total: usize,
+    /// Zero-based index of the current hit.
+    pub current: Option<usize>,
+}
+
 /// Everything about a frame that is not terminal content.
 #[derive(Clone, Copy, Debug)]
-pub struct DrawOpts {
+pub struct DrawOpts<'a> {
     pub selection: Option<Selection>,
     /// Unfocused windows show a hollow cursor.
     pub focused: bool,
@@ -23,9 +32,13 @@ pub struct DrawOpts {
     pub bell: f32,
     /// A link under the pointer, underlined so it reads as clickable.
     pub hover_link: Option<Span>,
+    /// Search hits, sorted by line then cell, and the spans of the current one.
+    pub highlights: &'a [Span],
+    pub current: &'a [Span],
+    pub search: Option<SearchBar<'a>>,
 }
 
-impl Default for DrawOpts {
+impl Default for DrawOpts<'_> {
     fn default() -> Self {
         DrawOpts {
             selection: None,
@@ -34,8 +47,39 @@ impl Default for DrawOpts {
             cursor_shape: CursorShape::Block,
             bell: 0.0,
             hover_link: None,
+            highlights: &[],
+            current: &[],
+            search: None,
         }
     }
+}
+
+/// Cells for a string, for text the terminal draws itself (the search bar).
+fn cells_of(text: &str) -> crate::grid::Row {
+    use unicode_width::UnicodeWidthChar;
+    let mut cells: Vec<crate::grid::Cell> = Vec::new();
+    for c in text.chars() {
+        match c.width().unwrap_or(1) {
+            0 => {
+                if let Some(last) = cells.last_mut() {
+                    last.push_mark(c);
+                }
+            }
+            w => {
+                let mut cell = crate::grid::Cell { ch: c, ..Default::default() };
+                if w >= 2 {
+                    cell.attrs |= Attrs::WIDE_LEADING;
+                    cells.push(cell);
+                    let mut sp = crate::grid::Cell::default();
+                    sp.attrs |= Attrs::WIDE_SPACER;
+                    cells.push(sp);
+                } else {
+                    cells.push(cell);
+                }
+            }
+        }
+    }
+    crate::grid::Row { cells, wrapped: false }
 }
 
 /// Somewhere a frame can be drawn: the software [`Canvas`], or the GPU.
@@ -389,6 +433,23 @@ impl Renderer {
                 }
             }
 
+            // --- search hits, over the cell background and under the text ---
+            if abs >= 0 && !opts.highlights.is_empty() {
+                let l = abs as usize;
+                for (spans, colour) in [(opts.highlights, palette.search_bg), (opts.current, palette.search_current_bg)] {
+                    let lo = spans.partition_point(|s| s.line < l);
+                    for s in &spans[lo..] {
+                        if s.line != l {
+                            break;
+                        }
+                        for cell in s.start..s.end.min(cols) {
+                            let col = layout.column_of(cell);
+                            canvas.fill_rect(self.pad_x + col as f32 * cell_w, y, cell_w, cell_h, colour);
+                        }
+                    }
+                }
+            }
+
             // --- procedural box drawing, per visual column ---
             for (col, &cell_idx) in layout.visual_cells.iter().enumerate() {
                 let Some(cell) = row.cells.get(cell_idx) else { continue };
@@ -522,6 +583,34 @@ impl Renderer {
             }
         }
 
+        // --- search bar, top right, drawn over everything ---
+        if let Some(bar) = opts.search {
+            let pad = 6.0;
+            let count = match (bar.current, bar.total) {
+                (_, 0) if bar.query.is_empty() => String::new(),
+                (_, 0) => "no matches".to_string(),
+                (Some(i), n) => format!("{}/{n}", i + 1),
+                (None, n) => format!("{n}"),
+            };
+            let query_cells = cells_of(bar.query);
+            let count_cells = cells_of(&count);
+            let qw = query_cells.cells.len().max(12) as f32 * cell_w;
+            let cw_ = count_cells.cells.len() as f32 * cell_w;
+            let w = pad * 2.0 + qw + cell_w + cw_ + cell_w;
+            let h = cell_h + pad * 2.0;
+            let x0 = canvas.width() as f32 - w - 8.0;
+            let y0 = 6.0;
+            canvas.fill_rect(x0 - 1.0, y0 - 1.0, w + 2.0, h + 2.0, palette.cursor);
+            canvas.fill_rect(x0, y0, w, h, palette.bg);
+            let ty = y0 + pad;
+            let rtl = self.draw_text(canvas, fonts, &query_cells, x0 + pad, ty, palette.fg, palette.bg, term);
+            // The caret sits where the next character goes.
+            let n = query_cells.cells.len() as f32;
+            let caret_x = if rtl { x0 + pad + qw - n * cell_w - 1.0 } else { x0 + pad + n * cell_w };
+            canvas.fill_rect(caret_x, ty, 2.0, cell_h, palette.cursor);
+            self.draw_text(canvas, fonts, &count_cells, x0 + w - pad - cw_, ty, palette.colors[8], palette.bg, term);
+        }
+
         // --- bell: a brief flash of the window edge ---
         if opts.bell > 0.01 {
             let a = opts.bell.clamp(0.0, 1.0);
@@ -596,6 +685,48 @@ impl Renderer {
                 }
             }
         }
+    }
+}
+
+impl Renderer {
+    /// Draw one row of the terminal's own text at (`x`, `y`), the row's
+    /// top-left. Returns whether it laid out right-to-left, which is where
+    /// its caret belongs. `bg` is where the row is drawn, for colour glyphs.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_text<T: Target>(
+        &mut self,
+        canvas: &mut T,
+        fonts: &mut Fonts,
+        row: &crate::grid::Row,
+        x: f32,
+        y: f32,
+        fg: Rgb,
+        _bg: Rgb,
+        term: &Terminal,
+    ) -> bool {
+        let _ = term;
+        let cols = row.cells.len();
+        if cols == 0 {
+            return false;
+        }
+        let layout = self.layouter.layout_row_ctx(
+            row,
+            cols,
+            fonts,
+            crate::term::BidiMode::Auto,
+            true,
+            crate::layout::RowContext { pre: "", post: "" },
+        );
+        let baseline = fonts.baseline;
+        for g in &layout.glyphs {
+            let gx = x + g.x;
+            let gy = y + baseline - g.y;
+            let Some(raster) = fonts.rasterize(g.font, g.glyph, g.px, gx) else { continue };
+            let ox = gx.floor() as i32 + raster.left;
+            let oy = gy.floor() as i32 - raster.top;
+            canvas.glyph(raster, ox, oy, fg);
+        }
+        layout.rtl
     }
 }
 

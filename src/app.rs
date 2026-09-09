@@ -4,7 +4,8 @@ use crate::font::Fonts;
 use crate::frame::FramePacer;
 use crate::pty::Pty;
 use crate::gpu::Gpu;
-use crate::render::{DrawOpts, Renderer};
+use crate::render::{DrawOpts, Renderer, SearchBar};
+use crate::search::{Index, Search};
 use crate::selection::{logical_line, selected_text, url_at, word_at, Selection, Span};
 use crate::term::{BidiMode, CursorShape, Modes, Terminal, Vt};
 use std::sync::Arc;
@@ -105,6 +106,12 @@ pub struct App {
     last_click: Option<(std::time::Instant, Hit)>,
     /// The link under the pointer while Cmd is held, and its target.
     hover_link: Option<(Span, String)>,
+    /// The search bar, while open, and the index behind it.
+    search: Option<Search>,
+    search_index: Index,
+    /// Bumped whenever the terminal's content changes, so the search index
+    /// knows when it is stale.
+    epoch: u64,
     clipboard: Option<arboard::Clipboard>,
     needs_redraw: bool,
     exited: bool,
@@ -224,6 +231,9 @@ impl App {
             clicks: 0,
             last_click: None,
             hover_link: None,
+            search: None,
+            search_index: Index::default(),
+            epoch: 0,
             clipboard: arboard::Clipboard::new().ok(),
             needs_redraw: true,
             exited: false,
@@ -254,6 +264,101 @@ impl App {
             && self.focused
             && self.term.modes.contains(Modes::CURSOR_VISIBLE)
             && self.term.grid.view_offset == 0
+    }
+
+    /// Open the search bar, seeded with a one-line selection if there is one.
+    fn search_open(&mut self) {
+        let seed = self
+            .selection
+            .map(|s| selected_text(&self.term, s))
+            .filter(|t| !t.is_empty() && !t.contains('\n'));
+        let mut search = self.search.take().unwrap_or_default();
+        if let Some(q) = seed {
+            search.query = q;
+        }
+        self.search = Some(search);
+        self.search_run(true);
+    }
+
+    /// Re-run the query. With `jump`, the view moves to the hit nearest the
+    /// bottom of what is showing; otherwise it stays put and the current hit
+    /// is kept by line.
+    fn search_run(&mut self, jump: bool) {
+        self.search_index.update(&self.term.grid, self.epoch);
+        let Some(search) = &mut self.search else { return };
+        let near = if jump {
+            let bottom = self.term.grid.viewport_top() + self.term.grid.rows as isize - 1;
+            Some(bottom.max(0) as usize)
+        } else {
+            search.current_line()
+        };
+        search.run(&self.search_index, near);
+        if jump {
+            self.search_show_current();
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Scroll so the current hit sits mid-screen.
+    fn search_show_current(&mut self) {
+        let Some(line) = self.search.as_ref().and_then(|s| s.current_line()) else { return };
+        let sb = self.term.grid.scrollback.len() as isize;
+        let off = (sb - line as isize + self.term.grid.rows as isize / 2).max(0) as f32;
+        let max = self.scroll_max();
+        self.scroll.jump_to(off, max);
+        self.needs_redraw = true;
+    }
+
+    /// Keys while the search bar is open. Returns true when consumed.
+    fn search_key(&mut self, key: &Key, text: Option<&str>) -> bool {
+        let Some(search) = &mut self.search else { return false };
+        let sup = self.modifiers.super_key();
+        let shift = self.modifiers.shift_key();
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.search = None;
+                self.needs_redraw = true;
+            }
+            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::ArrowUp) | Key::Named(NamedKey::ArrowDown) => {
+                let newer = matches!(key, Key::Named(NamedKey::ArrowDown)) || (matches!(key, Key::Named(NamedKey::Enter)) && shift);
+                search.step(if newer { 1 } else { -1 });
+                self.search_show_current();
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if sup {
+                    search.query.clear();
+                } else {
+                    search.query.pop();
+                }
+                self.search_run(true);
+            }
+            Key::Character(c) if sup && c.as_str() == "g" => {
+                search.step(if shift { 1 } else { -1 });
+                self.search_show_current();
+            }
+            Key::Character(c) if sup && c.as_str() == "v" => {
+                let pasted = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
+                if let Some(t) = pasted {
+                    let t: String = t.chars().filter(|c| !c.is_control()).collect();
+                    search.query.push_str(&t);
+                    self.search_run(true);
+                }
+            }
+            Key::Character(c) if sup && c.as_str() == "f" => {
+                // Cmd-F again with a selection re-seeds the query.
+                self.search_open();
+            }
+            _ if sup => return false,
+            _ => {
+                let Some(t) = text else { return true };
+                let t: String = t.chars().filter(|c| !c.is_control()).collect();
+                if !t.is_empty() {
+                    search.query.push_str(&t);
+                    self.search_run(true);
+                }
+            }
+        }
+        true
     }
 
     /// Underline the link under the pointer while Cmd is held.
@@ -295,6 +400,7 @@ impl App {
                 self.selection = None;
             }
             self.term.resize(rows, cols);
+            self.epoch += 1;
         }
         self.term.set_cell_px(cw, ch);
         self.term.prune_images();
@@ -311,6 +417,7 @@ impl App {
         let result = pty.drain(|bytes| self.vt.feed(&mut self.term, bytes));
         self.pty_pending = result.yielded;
         if result.bytes > 0 {
+            self.epoch += 1;
             let retired = (self.term.grid.scrolled - retired_before) as f32;
 
             if was_at_bottom {
@@ -647,18 +754,30 @@ impl ApplicationHandler<Wake> for App {
                 self.update_hover();
             }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
-                self.send(s.as_bytes());
+                if let Some(search) = &mut self.search {
+                    search.query.push_str(&s);
+                    self.search_run(true);
+                } else {
+                    self.send(s.as_bytes());
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state != ElementState::Pressed {
                     return;
                 }
                 self.blink_reset();
+                if self.search.is_some() && self.search_key(&event.logical_key, event.text.as_deref()) {
+                    return;
+                }
                 let sup = self.modifiers.super_key();
                 if sup {
                     // macOS command bindings.
                     if let Key::Character(c) = &event.logical_key {
                         match c.as_str() {
+                            "f" => {
+                                self.search_open();
+                                return;
+                            }
                             "c" => {
                                 let t = self.selection.map(|s| selected_text(&self.term, s)).unwrap_or_default();
                                 if !t.is_empty() {
@@ -922,6 +1041,14 @@ impl ApplicationHandler<Wake> for App {
             WindowEvent::RedrawRequested => {
                 let t0 = std::time::Instant::now();
                 self.step_scroll();
+                if self.search.is_some() && self.search_index.update(&self.term.grid, self.epoch) {
+                    // Content changed under an open search: keep the hits
+                    // honest without yanking the view around.
+                    if let Some(s) = &mut self.search {
+                        let near = s.current_line();
+                        s.run(&self.search_index, near);
+                    }
+                }
                 let t1 = std::time::Instant::now();
                 let cursor_on = self.blink_on || !self.blinking();
                 let (Some(win), Some(gpu)) = (&self.window, &mut self.gpu) else { return };
@@ -940,6 +1067,11 @@ impl ApplicationHandler<Wake> for App {
                     .map(|t| 1.0 - t.elapsed().as_secs_f32() / BELL_FLASH.as_secs_f32())
                     .filter(|b| *b > 0.0)
                     .unwrap_or(0.0);
+                let bar = self.search.as_ref().map(|s| SearchBar {
+                    query: &s.query,
+                    total: s.matches.len(),
+                    current: s.current,
+                });
                 let opts = DrawOpts {
                     selection: self.selection,
                     focused: self.focused,
@@ -947,6 +1079,9 @@ impl ApplicationHandler<Wake> for App {
                     cursor_shape: self.cfg.cursor_shape,
                     bell,
                     hover_link: self.hover_link.as_ref().map(|l| l.0),
+                    highlights: self.search.as_ref().map_or(&[], |s| s.spans.as_slice()),
+                    current: self.search.as_ref().map_or(&[], |s| s.current_spans()),
+                    search: bar,
                 };
                 self.renderer.draw(gpu, &self.term, &mut self.fonts, &opts);
                 let t2 = std::time::Instant::now();

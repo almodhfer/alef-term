@@ -40,6 +40,9 @@ pub struct Palette {
     pub cursor: Rgb,
     pub selection_bg: Rgb,
     pub selection_fg: Option<Rgb>,
+    /// Search hits, and the one the view is on.
+    pub search_bg: Rgb,
+    pub search_current_bg: Rgb,
 }
 
 impl Palette {
@@ -97,6 +100,8 @@ impl Palette {
             cursor: Rgb(0x1f, 0x5f, 0xc4),
             selection_bg: Rgb(0xc8, 0xdc, 0xf5),
             selection_fg: None,
+            search_bg: Rgb(0xff, 0xe9, 0x8a),
+            search_current_bg: Rgb(0xff, 0xb3, 0x40),
         }
     }
 
@@ -129,6 +134,8 @@ impl Palette {
             cursor: Rgb(0x62, 0xa0, 0xea),
             selection_bg: Rgb(0x2d, 0x41, 0x5a),
             selection_fg: None,
+            search_bg: Rgb(0x5a, 0x4a, 0x14),
+            search_current_bg: Rgb(0xa8, 0x7a, 0x10),
         }
     }
 

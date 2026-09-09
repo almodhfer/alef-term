@@ -138,6 +138,7 @@ dependencies = [
  "fontdb",
  "libc",
  "log",
+ "memchr",
  "png",
  "pollster",
  "portable-pty",
