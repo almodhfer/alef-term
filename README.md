@@ -152,7 +152,9 @@ underline/strikeout/inverse, cursor addressing, erase and insert/delete of
 characters and lines, `DECSTBM` scroll regions, the alternate screen, scrollback,
 autowrap with deferred wrap at the margin, wide (CJK) characters with spacers,
 combining marks, DEC line-drawing charset, bracketed paste, focus events, window title (OSC 0/2), palette changes (OSC 4),
-hyperlinks (OSC 8), clipboard writes (OSC 52), device status reports, mouse
+hyperlinks (OSC 8), clipboard writes (OSC 52), synchronized output (?2026) so
+full-screen programs do not tear mid-repaint, mode reporting (DECRQM) so they
+can detect it, device status reports, mouse
 reporting (click, drag, any-motion, wheel; legacy and SGR), the kitty
 keyboard protocol's disambiguation flag, images via both sixel and the kitty
 graphics protocol, selection and clipboard, and resize propagated to the child
@@ -169,12 +171,12 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-137 tests, covering: VT and grid behaviour; font coverage and fallback; the
+149 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics
-decoding; mouse event encoding; scroll easing, coalescing, and its interaction
-with incoming output; and end-to-end
+decoding; mouse event encoding; synchronized output and its watchdog; scroll
+easing, coalescing, and its interaction with incoming output; and end-to-end
 tests that drive a real shell — and a real editor — over a PTY, typing Arabic
 through the key encoder and interrupting a running command with Ctrl+C.
 
@@ -246,6 +248,7 @@ for.
 | `src/font.rs` | font loading, script fallback, glyph cache |
 | `src/boxdraw.rs` | procedural box-drawing glyphs |
 | `src/keys.rs` | key presses to terminal byte sequences |
+| `src/frame_hold.rs` | withholding frames during a synchronized update |
 | `src/scroll.rs` | scroll position and easing |
 | `src/selection.rs` | selection and copy |
 | `src/sixel.rs` | sixel image decoding |

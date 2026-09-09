@@ -12,6 +12,7 @@ pub mod font;
 mod frame;
 pub mod gpu;
 pub mod hash;
+pub mod frame_hold;
 pub mod grid;
 pub mod keys;
 pub mod kitty_graphics;

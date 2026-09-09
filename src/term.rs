@@ -39,6 +39,8 @@ bitflags::bitflags! {
         const BIDI            = 1 << 14;
         /// Turn the wheel into cursor keys on the alternate screen (?1007).
         const ALT_SCROLL      = 1 << 15;
+        /// Synchronized output (?2026): hold frames until the update is done.
+        const SYNC_OUTPUT     = 1 << 16;
     }
 }
 
@@ -282,6 +284,82 @@ impl Terminal {
         }
     }
 
+    /// The flag a private mode number maps to, for reporting purposes.
+    ///
+    /// Kept separate from `set_mode`, which applies side effects. Anything not
+    /// listed is reported as unrecognised rather than guessed at.
+    fn private_mode_flag(n: u16) -> Option<Modes> {
+        Some(match n {
+            1 => Modes::APP_CURSOR,
+            5 => Modes::REVERSE_VIDEO,
+            6 => Modes::ORIGIN,
+            7 => Modes::AUTOWRAP,
+            25 => Modes::CURSOR_VISIBLE,
+            66 => Modes::APP_KEYPAD,
+            1000 => Modes::MOUSE_CLICK,
+            1002 => Modes::MOUSE_DRAG,
+            1003 => Modes::MOUSE_MOTION,
+            1004 => Modes::FOCUS_EVENTS,
+            1006 => Modes::MOUSE_SGR,
+            1007 => Modes::ALT_SCROLL,
+            2004 => Modes::BRACKETED_PASTE,
+            2026 => Modes::SYNC_OUTPUT,
+            8888 => Modes::BIDI,
+            _ => return None,
+        })
+    }
+
+    /// DECRQM: report whether a mode is set, reset, or unknown to us.
+    ///
+    /// Applications ask before using a feature. Without an answer they assume
+    /// it is missing — synchronized output in particular is only ever sent by
+    /// programs that first confirmed the terminal understands it, so failing
+    /// to reply here makes the feature dead code.
+    fn report_mode(&mut self, private: bool, n: u16) {
+        let state = if private {
+            match n {
+                1049 | 47 | 1047 => {
+                    if self.grid.in_alt() {
+                        1
+                    } else {
+                        2
+                    }
+                }
+                _ => match Self::private_mode_flag(n) {
+                    Some(flag) => {
+                        if self.modes.contains(flag) {
+                            1
+                        } else {
+                            2
+                        }
+                    }
+                    // 0: the terminal does not recognise the mode.
+                    None => 0,
+                },
+            }
+        } else {
+            match n {
+                4 => {
+                    if self.modes.contains(Modes::INSERT) {
+                        1
+                    } else {
+                        2
+                    }
+                }
+                20 => {
+                    if self.modes.contains(Modes::LNM) {
+                        1
+                    } else {
+                        2
+                    }
+                }
+                _ => 0,
+            }
+        };
+        let q = if private { "?" } else { "" };
+        self.replies.extend_from_slice(format!("\x1b[{q}{n};{state}$y").as_bytes());
+    }
+
     fn set_mode(&mut self, private: bool, n: u16, on: bool) {
         let flag = match (private, n) {
             (true, 1) => Modes::APP_CURSOR,
@@ -303,6 +381,7 @@ impl Terminal {
             (true, 1004) => Modes::FOCUS_EVENTS,
             (true, 1006) => Modes::MOUSE_SGR,
             (true, 1007) => Modes::ALT_SCROLL,
+            (true, 2026) => Modes::SYNC_OUTPUT,
             (true, 2004) => Modes::BRACKETED_PASTE,
             (true, 8888) => Modes::BIDI,
             (true, 47) | (true, 1047) | (true, 1049) => {
@@ -875,6 +954,12 @@ impl Perform for Terminal {
                     }
                     3 => self.tab_stops.iter_mut().for_each(|t| *t = false),
                     _ => {}
+                }
+            }
+            'p' if intermediates.contains(&b'$') => {
+                // DECRQM — request mode.
+                for p in params.iter() {
+                    self.report_mode(private, p[0]);
                 }
             }
             'h' => {

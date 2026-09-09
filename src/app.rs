@@ -89,6 +89,8 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     needs_redraw: bool,
     exited: bool,
+    /// Withholds frames while an application is mid-update (mode 2026).
+    frame_hold: crate::frame_hold::FrameHold,
     scroll: crate::scroll::Scroller,
     /// Fractional wheel movement not yet worth a whole line. Trackpads deliver
     /// deltas far smaller than a row; without carrying the remainder, either
@@ -172,6 +174,7 @@ impl App {
             clipboard: arboard::Clipboard::new().ok(),
             needs_redraw: true,
             exited: false,
+            frame_hold: crate::frame_hold::FrameHold::new(),
             scroll: Default::default(),
             wheel_remainder: 0.0,
             last_frame: None,
@@ -246,8 +249,20 @@ impl App {
                 p.write(&replies);
             }
         }
-        if self.term.damaged {
-            self.term.damaged = false;
+        // Synchronized output. The mode is read *after* parsing the batch: a
+        // program often brackets an entire repaint inside one write, and in
+        // that case the update is already complete and nothing should be held.
+        let damaged = std::mem::take(&mut self.term.damaged);
+        let syncing = self.term.modes.contains(Modes::SYNC_OUTPUT);
+        let out = self.frame_hold.poll(syncing, damaged, std::time::Instant::now());
+        if out.drop_mode {
+            // The hold overran its watchdog, so the program that opened it is
+            // not going to close it. Stop honouring the mode rather than
+            // freezing the display.
+            log::debug!("synchronized output watchdog fired; releasing the frame");
+            self.term.modes.remove(Modes::SYNC_OUTPUT);
+        }
+        if out.redraw {
             self.needs_redraw = true;
         }
         if result.exited {
@@ -849,6 +864,12 @@ impl ApplicationHandler<Wake> for App {
             // another read to wake us or spinning before input is dispatched.
             let resume = now + std::time::Duration::from_millis(1);
             deadline = Some(deadline.map_or(resume, |d| d.min(resume)));
+        }
+        // A hold ends either when the application closes it or when the
+        // watchdog fires. The latter needs the loop to wake on its own, since
+        // a crashed program will send nothing more.
+        if let Some(hold) = self.frame_hold.deadline() {
+            deadline = Some(deadline.map_or(hold, |d| d.min(hold)));
         }
         el.set_control_flow(match deadline {
             Some(due) => ControlFlow::WaitUntil(due),
