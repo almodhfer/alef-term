@@ -37,6 +37,8 @@ pub struct File {
     pub visual_bell: Option<bool>,
     /// "dark" or "light"; the base the colours below adjust.
     pub theme: Option<String>,
+    /// "gpu" (the default) or "software".
+    pub renderer: Option<String>,
     pub colors: Colors,
 }
 
@@ -144,6 +146,13 @@ impl File {
         }
         if let Some(v) = self.visual_bell {
             cfg.visual_bell = v;
+        }
+        if let Some(r) = &self.renderer {
+            cfg.software = match r.as_str() {
+                "gpu" => false,
+                "software" | "cpu" => true,
+                other => return Err(anyhow!("renderer: expected gpu or software, got {other:?}")),
+            };
         }
         if let Some(t) = &self.theme {
             cfg.palette = match t.as_str() {

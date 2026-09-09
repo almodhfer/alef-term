@@ -4,7 +4,7 @@ use crate::font::Fonts;
 use crate::frame::FramePacer;
 use crate::pty::Pty;
 use crate::gpu::Gpu;
-use crate::render::{DrawOpts, Renderer, SearchBar};
+use crate::render::{Canvas, DrawOpts, Renderer, SearchBar};
 use crate::search::{Index, Search};
 use crate::selection::{logical_line, selected_text, url_at, word_at, Selection, Span};
 use crate::term::{BidiMode, CursorShape, Modes, Terminal, Vt};
@@ -58,6 +58,15 @@ pub struct Config {
     /// Flash the window edge on BEL.
     pub visual_bell: bool,
     pub palette: crate::color::Palette,
+    /// Draw on the CPU even when a GPU is available.
+    pub software: bool,
+}
+
+/// Where frames go: the GPU compositor, or the software canvas presented
+/// through softbuffer when there is no usable GPU or the user asked for it.
+enum Output {
+    Gpu(Gpu),
+    Software(softbuffer::Surface<Arc<Window>, Arc<Window>>),
 }
 
 impl Default for Config {
@@ -77,6 +86,7 @@ impl Default for Config {
             cursor_blink: false,
             visual_bell: true,
             palette: crate::color::Palette::dark(),
+            software: std::env::var_os("ARABIC_TERM_SOFTWARE").is_some(),
         }
     }
 }
@@ -84,7 +94,7 @@ impl Default for Config {
 pub struct App {
     cfg: Config,
     window: Option<Arc<Window>>,
-    gpu: Option<Gpu>,
+    output: Option<Output>,
     /// Font generation the GPU glyph atlas was built for.
     atlas_generation: u64,
     term: Terminal,
@@ -213,7 +223,7 @@ impl App {
         Ok(App {
             cfg,
             window: None,
-            gpu: None,
+            output: None,
             atlas_generation: 0,
             term,
             vt: Vt::new(),
@@ -717,7 +727,24 @@ impl ApplicationHandler<Wake> for App {
         self.scale = win.scale_factor() as f32;
         self.fonts.set_size(self.cfg.font_size * self.scale);
 
-        self.gpu = Some(Gpu::new(win.clone()).expect("initialise GPU"));
+        let gpu = if self.cfg.software {
+            None
+        } else {
+            match Gpu::new(win.clone()) {
+                Ok(g) => Some(g),
+                Err(e) => {
+                    eprintln!("arabic-term: no GPU ({e:#}); drawing in software");
+                    None
+                }
+            }
+        };
+        self.output = Some(match gpu {
+            Some(g) => Output::Gpu(g),
+            None => {
+                let ctx = softbuffer::Context::new(win.clone()).expect("softbuffer context");
+                Output::Software(softbuffer::Surface::new(&ctx, win.clone()).expect("softbuffer surface"))
+            }
+        });
         self.atlas_generation = self.fonts.generation();
         self.window = Some(win);
 
@@ -1083,17 +1110,11 @@ impl ApplicationHandler<Wake> for App {
                 }
                 let t1 = std::time::Instant::now();
                 let cursor_on = self.blink_on || !self.blinking();
-                let (Some(win), Some(gpu)) = (&self.window, &mut self.gpu) else { return };
+                let (Some(win), Some(output)) = (&self.window, &mut self.output) else { return };
                 let size = win.inner_size();
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
-                gpu.resize(size.width, size.height);
-                if self.fonts.generation() != self.atlas_generation {
-                    gpu.clear_glyphs();
-                    self.atlas_generation = self.fonts.generation();
-                }
-                gpu.begin();
                 let bell = self
                     .bell_at
                     .map(|t| 1.0 - t.elapsed().as_secs_f32() / BELL_FLASH.as_secs_f32())
@@ -1115,10 +1136,42 @@ impl ApplicationHandler<Wake> for App {
                     current: self.search.as_ref().map_or(&[], |s| s.current_spans()),
                     search: bar,
                 };
-                self.renderer.draw(gpu, &self.term, &mut self.fonts, &opts);
-                let t2 = std::time::Instant::now();
-                if let Err(e) = gpu.flush(win) {
-                    log::warn!("present failed: {e:#}");
+                let t2;
+                match output {
+                    Output::Gpu(gpu) => {
+                        gpu.resize(size.width, size.height);
+                        if self.fonts.generation() != self.atlas_generation {
+                            gpu.clear_glyphs();
+                            self.atlas_generation = self.fonts.generation();
+                        }
+                        gpu.begin();
+                        self.renderer.draw(gpu, &self.term, &mut self.fonts, &opts);
+                        t2 = std::time::Instant::now();
+                        if let Err(e) = gpu.flush(win) {
+                            log::warn!("present failed: {e:#}");
+                        }
+                    }
+                    Output::Software(surface) => {
+                        let (Some(w), Some(h)) = (
+                            std::num::NonZeroU32::new(size.width),
+                            std::num::NonZeroU32::new(size.height),
+                        ) else {
+                            return;
+                        };
+                        if surface.resize(w, h).is_err() {
+                            return;
+                        }
+                        let Ok(mut buffer) = surface.buffer_mut() else { return };
+                        let mut canvas = Canvas {
+                            buf: &mut buffer,
+                            width: size.width as usize,
+                            height: size.height as usize,
+                        };
+                        self.renderer.draw(&mut canvas, &self.term, &mut self.fonts, &opts);
+                        t2 = std::time::Instant::now();
+                        win.pre_present_notify();
+                        let _ = buffer.present();
+                    }
                 }
                 let t3 = std::time::Instant::now();
                 self.frames.presented(t3);

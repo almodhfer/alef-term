@@ -70,6 +70,8 @@ fn mistakes_are_reported_not_ignored() {
     assert!(err("theme = \"solarized\"").contains("theme"));
     assert!(err("[colors]\nbackground = \"red\"").contains("background"));
     assert!(apply("font_size = 1000").is_err());
+    assert!(err("renderer = \"vulkan\"").contains("renderer"));
+    assert!(apply("renderer = \"software\"").unwrap().software);
 }
 
 #[test]

@@ -18,6 +18,7 @@ cursor_blink = false
 visual_bell = true
 
 theme = "dark"              # dark | light
+renderer = "gpu"            # gpu | software (the fallback when there is no GPU)
 
 [colors]
 # foreground = "#d4d9e0"
