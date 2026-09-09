@@ -16,7 +16,7 @@ fn main() -> anyhow::Result<()> {
     let mut fonts = Fonts::new(16.0, None)?;
     let mut term = Terminal::new(rows, cols, 500);
     let mut vt = Vt::new();
-    let mut pty = Pty::spawn(Some(&prog), rows as u16, cols as u16, 8, 16, || {})?;
+    let mut pty = Pty::spawn(Some(&prog), rows as u16, cols as u16, 8, 16, None, || {})?;
 
     // Send the driving keystrokes, letting the program settle between them.
     for chunk in script.split("<<PAUSE>>") {

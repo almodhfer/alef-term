@@ -32,6 +32,7 @@ struct Hit {
 #[derive(Debug, Clone, Copy)]
 pub struct Wake;
 
+#[derive(Clone)]
 pub struct Config {
     /// Monospace and Arabic families to try first; `None` uses the built-in
     /// preference lists.
@@ -91,8 +92,20 @@ impl Default for Config {
     }
 }
 
-pub struct App {
+/// Something a pane asks the application to do on its behalf.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Request {
+    NewWindow,
+    Close,
+    Quit,
+}
+
+/// One window: its terminal, shell, fonts and everything drawn in it.
+pub struct Pane {
     cfg: Config,
+    /// Directory the shell starts in, for windows opened from another.
+    start_dir: Option<String>,
+    request: Option<Request>,
     window: Option<Arc<Window>>,
     output: Option<Output>,
     /// Font generation the GPU glyph atlas was built for.
@@ -210,8 +223,8 @@ impl Profile {
     }
 }
 
-impl App {
-    pub fn new(cfg: Config, proxy: EventLoopProxy<Wake>) -> anyhow::Result<App> {
+impl Pane {
+    pub fn new(cfg: Config, proxy: EventLoopProxy<Wake>, start_dir: Option<String>) -> anyhow::Result<Pane> {
         let fonts = Fonts::with_families(
             cfg.font_size,
             cfg.arabic_scale,
@@ -220,8 +233,10 @@ impl App {
         )?;
         let mut term = Terminal::new(cfg.rows, cfg.cols, cfg.scrollback);
         term.set_palette(cfg.palette.clone());
-        Ok(App {
+        Ok(Pane {
             cfg,
+            start_dir,
+            request: None,
             window: None,
             output: None,
             atlas_generation: 0,
@@ -709,8 +724,13 @@ impl App {
     }
 }
 
-impl ApplicationHandler<Wake> for App {
-    fn resumed(&mut self, el: &ActiveEventLoop) {
+impl Pane {
+    fn window_id(&self) -> Option<WindowId> {
+        self.window.as_ref().map(|w| w.id())
+    }
+
+    /// Create the window and start the shell.
+    fn open(&mut self, el: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
@@ -756,6 +776,7 @@ impl ApplicationHandler<Wake> for App {
             self.term.grid.cols as u16,
             cw as u16,
             ch as u16,
+            self.start_dir.as_deref(),
             move || {
                 let _ = proxy.send_event(Wake);
             },
@@ -768,24 +789,16 @@ impl ApplicationHandler<Wake> for App {
             }
             Err(e) => {
                 eprintln!("failed to start shell: {e}");
-                el.exit();
+                self.exited = true;
             }
         }
         self.reflow();
     }
 
-    fn user_event(&mut self, _el: &ActiveEventLoop, _: Wake) {
-        // Output is drained once in about_to_wait, after input events have
-        // been delivered. A wake must not itself start another parse/redraw.
-    }
-
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn handle(&mut self, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                if let Some(p) = &self.pty {
-                    p.kill();
-                }
-                el.exit();
+                self.request = Some(Request::Close);
             }
             WindowEvent::Focused(f) => {
                 self.focused = f;
@@ -832,6 +845,18 @@ impl ApplicationHandler<Wake> for App {
                         match c.as_str() {
                             "f" => {
                                 self.search_open();
+                                return;
+                            }
+                            "n" => {
+                                self.request = Some(Request::NewWindow);
+                                return;
+                            }
+                            "w" => {
+                                self.request = Some(Request::Close);
+                                return;
+                            }
+                            "q" => {
+                                self.request = Some(Request::Quit);
                                 return;
                             }
                             "c" => {
@@ -1188,11 +1213,12 @@ impl ApplicationHandler<Wake> for App {
         }
     }
 
-    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+    /// Drain output, advance animations, and say when the loop should wake
+    /// again for this pane (`None` when it can sleep until an event).
+    fn tick(&mut self) -> Option<std::time::Instant> {
         self.drain_pty();
         if self.exited {
-            el.exit();
-            return;
+            return None;
         }
         // Only ask for another frame while something is actually moving; when
         // idle the loop goes back to blocking on events rather than spinning.
@@ -1240,6 +1266,90 @@ impl ApplicationHandler<Wake> for App {
         // a crashed program will send nothing more.
         if let Some(hold) = self.frame_hold.deadline() {
             deadline = Some(deadline.map_or(hold, |d| d.min(hold)));
+        }
+        deadline
+    }
+}
+
+/// The application: one pane per window.
+pub struct App {
+    cfg: Config,
+    proxy: EventLoopProxy<Wake>,
+    panes: Vec<Pane>,
+}
+
+impl App {
+    pub fn new(cfg: Config, proxy: EventLoopProxy<Wake>) -> anyhow::Result<App> {
+        // Fail early on what every pane needs, before the event loop starts.
+        Fonts::with_families(cfg.font_size, cfg.arabic_scale, cfg.font.as_deref(), cfg.arabic_font.as_deref())?;
+        Ok(App { cfg, proxy, panes: Vec::new() })
+    }
+
+    fn open_pane(&mut self, el: &ActiveEventLoop, start_dir: Option<String>) {
+        match Pane::new(self.cfg.clone(), self.proxy.clone(), start_dir) {
+            Ok(mut pane) => {
+                pane.open(el);
+                if !pane.exited {
+                    self.panes.push(pane);
+                }
+            }
+            Err(e) => eprintln!("arabic-term: cannot open a window: {e:#}"),
+        }
+    }
+}
+
+impl ApplicationHandler<Wake> for App {
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        if self.panes.is_empty() {
+            self.open_pane(el, None);
+            if self.panes.is_empty() {
+                el.exit();
+            }
+        }
+    }
+
+    fn user_event(&mut self, _el: &ActiveEventLoop, _: Wake) {
+        // Output is drained once in about_to_wait, after input events have
+        // been delivered. A wake must not itself start another parse/redraw.
+    }
+
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        let Some(i) = self.panes.iter().position(|p| p.window_id() == Some(id)) else { return };
+        self.panes[i].handle(event);
+        match self.panes[i].request.take() {
+            Some(Request::NewWindow) => {
+                // A new window starts where this one's shell is.
+                let dir = self.panes[i].term.cwd.clone();
+                self.open_pane(el, dir);
+            }
+            Some(Request::Close) => {
+                // Dropping the pane closes its window and ends its shell.
+                self.panes.remove(i);
+                if self.panes.is_empty() {
+                    el.exit();
+                }
+            }
+            Some(Request::Quit) => el.exit(),
+            None => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        let mut deadline: Option<std::time::Instant> = None;
+        self.panes.retain_mut(|pane| {
+            let due = pane.tick();
+            if pane.exited {
+                return false;
+            }
+            deadline = match (deadline, due) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            true
+        });
+        if self.panes.is_empty() {
+            el.exit();
+            return;
         }
         el.set_control_flow(match deadline {
             Some(due) => ControlFlow::WaitUntil(due),

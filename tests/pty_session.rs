@@ -53,7 +53,7 @@ fn pump_until(
 fn shell_output_reaches_the_grid() {
     let mut term = Terminal::new(10, 60, 100);
     let mut vt = Vt::new();
-    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, None, || {}).expect("spawn pty");
 
     pty.write(b"printf 'hello-from-shell\\n'\n");
     let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(10), |t| {
@@ -69,7 +69,7 @@ fn arabic_survives_the_round_trip_through_the_pty() {
     // one cell per letter, with diacritics attached rather than spread out.
     let mut term = Terminal::new(10, 60, 100);
     let mut vt = Vt::new();
-    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, None, || {}).expect("spawn pty");
 
     pty.write("printf 'مرحبا بالعالم\\n'\n".as_bytes());
     let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(10), |t| {
@@ -86,7 +86,7 @@ fn arabic_survives_the_round_trip_through_the_pty() {
 fn resize_is_reported_to_the_child() {
     let mut term = Terminal::new(10, 60, 100);
     let mut vt = Vt::new();
-    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, None, || {}).expect("spawn pty");
 
     pty.resize(24, 97, 8, 16);
     // stty reads the window size straight from the tty.
@@ -118,7 +118,7 @@ fn editor_pre_shaped_arabic_arrives_as_base_letters() {
 
     let mut term = Terminal::new(24, 80, 100);
     let mut vt = Vt::new();
-    let mut pty = Pty::spawn(Some("/bin/sh"), 24, 80, 8, 16, || {}).expect("spawn pty");
+    let mut pty = Pty::spawn(Some("/bin/sh"), 24, 80, 8, 16, None, || {}).expect("spawn pty");
     pty.write(format!("{nvim} -u NONE {}\n", file.display()).as_bytes());
 
     let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(20), |t| {
@@ -155,7 +155,7 @@ fn type_line(pty: &mut Pty, s: &str) {
 fn typing_through_the_key_encoder_drives_a_real_shell() {
     let mut term = Terminal::new(10, 60, 100);
     let mut vt = Vt::new();
-    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, None, || {}).expect("spawn pty");
 
     type_line(&mut pty, "printf 'typed-ok\\n'");
     let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(10), |t| {
@@ -171,7 +171,7 @@ fn typing_arabic_reaches_the_shell_and_comes_back() {
     // special handling for Arabic anywhere along it.
     let mut term = Terminal::new(10, 60, 100);
     let mut vt = Vt::new();
-    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, None, || {}).expect("spawn pty");
 
     type_line(&mut pty, "printf 'مرحبا\\n'");
     let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(10), |t| {
@@ -188,7 +188,7 @@ fn ctrl_c_interrupts_a_running_command() {
 
     let mut term = Terminal::new(10, 60, 100);
     let mut vt = Vt::new();
-    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, || {}).expect("spawn pty");
+    let mut pty = Pty::spawn(Some("/bin/sh"), 10, 60, 8, 16, None, || {}).expect("spawn pty");
 
     pty.write(b"sleep 30\n");
     std::thread::sleep(Duration::from_millis(500));

@@ -97,7 +97,8 @@ cargo build --release
 ./target/release/arabic-term
 ```
 
-Or build and launch in one step with `cargo run --release`. Plain `cargo run`
+`scripts/bundle.sh` builds `target/bundle/Arabic Term.app`, with an icon, for
+the Dock, Spotlight and `open`. Or build and launch in one step with `cargo run --release`. Plain `cargo run`
 selects the development build even after `cargo build --release`; the development
 profile also enables optimization so scrolling and text shaping remain responsive.
 
@@ -140,6 +141,7 @@ background, cursor, selection and the 16 ANSI colours.
 | --- | --- |
 | `Cmd` `+` / `-` / `0` | font size |
 | `Cmd R` | cycle base direction: LTR → RTL → auto |
+| `Cmd N` / `Cmd W` / `Cmd Q` | new window (in the shell's directory, when it reports it with OSC 7) / close window / quit |
 | `Cmd C` / `Cmd V` | copy / paste |
 | `Cmd F` | search the scrollback; `Enter` / `Shift Enter` (or the arrows) step to older / newer hits, `Cmd G` likewise, `Esc` closes |
 | double / triple click | select a word / a whole line, soft wraps included |
@@ -260,9 +262,10 @@ images to a `Target` trait, and the GPU target turns each into one instanced
 quad: glyphs are rasterised by swash once and uploaded to an atlas, images
 become textures, and the quads are drawn in emission order so layering is
 identical to the software canvas. The software canvas is kept as the second
-`Target`; the headless tests and examples render through it, and `tests/gpu.rs`
-renders a busy screen both ways and requires every pixel to match within
-rounding.
+`Target`: the headless tests and examples render through it, the window falls
+back to it (through softbuffer) when there is no usable GPU or when the
+configuration says `renderer = "software"`, and `tests/gpu.rs` renders a busy
+screen both ways and requires every pixel to match within rounding.
 
 It deliberately does **not** do damage tracking. Repainting a whole frame is a
 few thousand quads, cheaper than the bookkeeping to avoid it, so the renderer

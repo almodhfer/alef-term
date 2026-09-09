@@ -60,6 +60,7 @@ impl Pty {
         cols: u16,
         cell_w: u16,
         cell_h: u16,
+        cwd: Option<&str>,
         wake: impl Fn() + Send + 'static,
     ) -> Result<Pty> {
         let sys = native_pty_system();
@@ -82,8 +83,15 @@ impl Pty {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "arabic-term");
-        if let Ok(cwd) = std::env::current_dir() {
-            cmd.cwd(cwd);
+        // Start where asked (a new window inherits its parent's directory),
+        // else where we were started.
+        match cwd.filter(|d| std::path::Path::new(d).is_dir()) {
+            Some(dir) => cmd.cwd(dir),
+            None => {
+                if let Ok(here) = std::env::current_dir() {
+                    cmd.cwd(here);
+                }
+            }
         }
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -210,5 +218,12 @@ mod tests {
         assert!(result.yielded);
         assert_eq!(result.bytes, 1);
         assert!(matches!(rx.try_recv(), Ok(PtyEvent::Output(b)) if b == [2]));
+    }
+}
+
+impl Drop for Pty {
+    /// Closing a window ends its shell; nothing should outlive the tab.
+    fn drop(&mut self) {
+        self.kill();
     }
 }
