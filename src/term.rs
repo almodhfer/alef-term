@@ -97,6 +97,12 @@ pub struct Terminal {
     pub cursor_style: CursorStyle,
     /// BEL characters received since the UI last looked.
     pub bells: u32,
+    /// Absolute lines where a shell said a prompt starts (OSC 133 A), oldest
+    /// first, for jumping between commands. Read through `prompt_lines`.
+    prompts: Vec<u64>,
+    /// The shell's working directory, when it reports it (OSC 7), for
+    /// opening new windows in the same place.
+    pub cwd: Option<String>,
     pub bidi_mode: BidiMode,
     pub title: String,
     /// Bytes to send back up the PTY (device reports, mouse, focus events).
@@ -137,6 +143,8 @@ impl Terminal {
             default_palette: crate::color::Palette::dark(),
             cursor_style: CursorStyle::default(),
             bells: 0,
+            prompts: Vec::new(),
+            cwd: None,
             bidi_mode: BidiMode::default(),
             title: String::from("arabic-term"),
             replies: Vec::new(),
@@ -206,6 +214,21 @@ impl Terminal {
     pub fn prune_images(&mut self) {
         let oldest = self.grid.scrolled.saturating_sub(self.grid.max_scrollback as u64);
         self.images.retain(|p| p.line + 64 >= oldest);
+    }
+
+    /// Prompt lines still within reach of the scrollback, oldest first.
+    pub fn prompt_lines(&mut self) -> &[u64] {
+        self.prune_prompts();
+        &self.prompts
+    }
+
+    /// Forget marks on lines that fell off the scrollback.
+    fn prune_prompts(&mut self) {
+        let oldest = self.grid.scrolled.saturating_sub(self.grid.scrollback.len() as u64);
+        let keep = self.prompts.partition_point(|&l| l < oldest);
+        if keep > 0 {
+            self.prompts.drain(..keep);
+        }
     }
 
     /// Install the configured colours, as both the live palette and the one
@@ -828,6 +851,27 @@ impl Perform for Terminal {
                     self.damaged = true;
                 }
             }
+            b"7" => {
+                // OSC 7 ; file://host/path — the shell's working directory.
+                let Some(uri) = params.get(1) else { return };
+                let uri = String::from_utf8_lossy(uri);
+                let path = uri
+                    .strip_prefix("file://")
+                    .map(|rest| rest.find('/').map_or("/", |i| &rest[i..]))
+                    .unwrap_or(&uri);
+                self.cwd = Some(percent_decode(path));
+            }
+            b"133" => {
+                // Semantic prompt marks. Only A (prompt start) matters here:
+                // it is what "previous command" jumps to.
+                if params.get(1).is_some_and(|p| p.first() == Some(&b'A')) {
+                    let line = self.grid.scrolled + self.grid.screen.cursor.row as u64;
+                    if self.prompts.last() != Some(&line) {
+                        self.prompts.push(line);
+                    }
+                    self.prune_prompts();
+                }
+            }
             b"110" => {
                 self.palette.fg = self.default_palette.fg;
                 self.damaged = true;
@@ -1212,6 +1256,25 @@ fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// `%xx` escapes to bytes, as in a file:// URI.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() + 0 && i + 2 <= bytes.len() - 1 {
+            if let Ok(v) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn parse_xcolor(spec: &[u8]) -> Option<Rgb> {

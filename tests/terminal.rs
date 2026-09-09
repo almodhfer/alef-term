@@ -567,3 +567,38 @@ fn reflow_is_fast_enough_for_live_resizing() {
     assert!(screen(&t).iter().any(|r| r.starts_with("line 4999 ")), "the last line is on screen");
     assert_eq!(t.grid.screen.cursor.col, 0);
 }
+
+#[test]
+fn osc7_records_the_working_directory() {
+    let t = run(2, 20, "\x1b]7;file://mac.local/Users/me/My%20Project\x07");
+    assert_eq!(t.cwd.as_deref(), Some("/Users/me/My Project"));
+    let t = run(2, 20, "\x1b]7;/tmp/x\x1b\\");
+    assert_eq!(t.cwd.as_deref(), Some("/tmp/x"));
+}
+
+#[test]
+fn osc133_prompt_marks_follow_their_lines_into_scrollback() {
+    let mut t = Terminal::new(3, 20, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1b]133;A\x07$ one\r\nout\r\nout\r\n\x1b]133;A\x07$ two\r\nout\r\nout\r\n\x1b]133;A\x07$ ");
+    assert_eq!(t.prompt_lines(), &[0, 3, 6]);
+    assert_eq!(t.grid.scrolled, 4, "three rows showing lines 4, 5 and 6");
+    // A prompt drawn twice on the same line (a redraw) is one mark.
+    vt.feed(&mut t, b"\r\x1b]133;A\x07$ ");
+    assert_eq!(t.prompt_lines(), &[0, 3, 6]);
+}
+
+#[test]
+fn prompt_marks_are_dropped_with_the_scrollback() {
+    let mut t = Terminal::new(2, 20, 2);
+    let mut vt = Vt::new();
+    for _ in 0..6 {
+        vt.feed(&mut t, b"\x1b]133;A\x07$ x\r\n");
+    }
+    // Only two lines of history survive above the two on screen.
+    let oldest = t.grid.scrolled - t.grid.scrollback.len() as u64;
+    let scrolled = t.grid.scrolled;
+    let marks = t.prompt_lines().to_vec();
+    assert!(marks.iter().all(|&l| l >= oldest), "{marks:?} vs oldest {oldest} (scrolled {scrolled})");
+    assert_eq!(marks, vec![3, 4, 5]);
+}

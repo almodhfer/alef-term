@@ -266,6 +266,35 @@ impl App {
             && self.term.grid.view_offset == 0
     }
 
+    /// Scroll to the previous (`-1`) or next (`+1`) prompt the shell marked
+    /// with OSC 133, putting it at the top of the view. Returns false when
+    /// there is none to go to, so the key can fall through.
+    fn jump_prompt(&mut self, dir: i32) -> bool {
+        let prompts = self.term.prompt_lines().to_vec();
+        let grid = &self.term.grid;
+        let base = grid.scrolled as i64 - grid.scrollback.len() as i64;
+        // The absolute line at the top of the view now.
+        let top = base + grid.viewport_top() as i64;
+        let target = if dir < 0 {
+            prompts.iter().rev().find(|&&l| (l as i64) < top).copied()
+        } else {
+            prompts.iter().find(|&&l| (l as i64) > top).copied()
+        };
+        let Some(line) = target else {
+            if dir > 0 && !self.scroll.at_bottom() {
+                self.scroll_to(0.0);
+                return true;
+            }
+            return false;
+        };
+        // Offset back from the live screen that puts `line` at the top.
+        let off = (grid.scrolled as i64 - line as i64).max(0) as f32;
+        let max = self.scroll_max();
+        self.scroll.jump_to(off, max);
+        self.needs_redraw = true;
+        true
+    }
+
     /// Open the search bar, seeded with a one-line selection if there is one.
     fn search_open(&mut self) {
         let seed = self
@@ -828,6 +857,9 @@ impl ApplicationHandler<Wake> for App {
                 if self.modifiers.shift_key() && !self.term.grid.in_alt() {
                     let page = self.term.grid.rows.saturating_sub(1) as f32;
                     let handled = match &event.logical_key {
+                        // Previous / next prompt, when the shell marks them.
+                        Key::Named(NamedKey::ArrowUp) => self.jump_prompt(-1),
+                        Key::Named(NamedKey::ArrowDown) => self.jump_prompt(1),
                         Key::Named(NamedKey::PageUp) => {
                             self.scroll_by(page);
                             true
