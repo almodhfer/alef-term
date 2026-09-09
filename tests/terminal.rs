@@ -433,3 +433,137 @@ fn bel_is_counted_for_the_ui() {
     assert_eq!(t.bells, 3);
     assert_eq!(line(&t, 0), "ab");
 }
+
+/// Every row of the screen, including trailing blanks trimmed.
+fn screen(t: &Terminal) -> Vec<String> {
+    (0..t.grid.rows).map(|r| line(t, r)).collect()
+}
+
+#[test]
+fn narrowing_rewraps_long_lines_instead_of_cutting_them() {
+    let mut t = Terminal::new(4, 20, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"0123456789abcdefghij_and_more");
+    assert_eq!(screen(&t)[..2], ["0123456789abcdefghij", "_and_more"]);
+    assert!(t.grid.screen.rows[0].wrapped);
+
+    t.resize(4, 10);
+    assert_eq!(screen(&t), ["0123456789", "abcdefghij", "_and_more", ""]);
+    assert_eq!((t.grid.screen.cursor.row, t.grid.screen.cursor.col), (2, 9));
+
+    // Widening joins the pieces back into one line.
+    t.resize(4, 40);
+    assert_eq!(screen(&t)[0], "0123456789abcdefghij_and_more");
+    assert_eq!((t.grid.screen.cursor.row, t.grid.screen.cursor.col), (0, 29));
+    assert!(!t.grid.screen.rows[0].wrapped);
+}
+
+#[test]
+fn explicit_newlines_survive_reflow() {
+    let mut t = Terminal::new(6, 30, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"short\r\nthis line is longer than ten\r\nend");
+    t.resize(6, 10);
+    assert_eq!(screen(&t), ["short", "this line", "is longer", "than ten", "end", ""]);
+    t.resize(6, 30);
+    assert_eq!(screen(&t)[..3], ["short", "this line is longer than ten", "end"]);
+}
+
+#[test]
+fn reflow_moves_text_between_screen_and_scrollback() {
+    let mut t = Terminal::new(3, 10, 100);
+    let mut vt = Vt::new();
+    // Three logical lines, the middle one wrapping onto two rows: four rows
+    // for a three-row screen, so one goes to scrollback.
+    vt.feed(&mut t, b"one\r\n0123456789abcdef\r\nthree");
+    assert_eq!(t.grid.scrollback.len(), 1);
+    assert_eq!(screen(&t), ["0123456789", "abcdef", "three"]);
+
+    // Wide enough for the long line to fit on one row: three rows in total,
+    // so the retired line comes back.
+    t.resize(3, 20);
+    assert_eq!(t.grid.scrollback.len(), 0);
+    assert_eq!(screen(&t), ["one", "0123456789abcdef", "three"]);
+    assert_eq!((t.grid.screen.cursor.row, t.grid.screen.cursor.col), (2, 5));
+    // And the terminal keeps working at the right place.
+    vt.feed(&mut t, b"!");
+    assert_eq!(line(&t, 2), "three!");
+
+    // Narrow again: the first line retires once more.
+    t.resize(3, 10);
+    assert_eq!(t.grid.scrollback.len(), 1);
+    assert_eq!(screen(&t), ["0123456789", "abcdef", "three!"]);
+}
+
+#[test]
+fn a_short_session_stays_at_the_top_when_reflowed() {
+    let mut t = Terminal::new(10, 20, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"$ ls\r\nfile\r\n$ ");
+    t.resize(10, 15);
+    assert_eq!(screen(&t)[..3], ["$ ls", "file", "$"]);
+    assert_eq!((t.grid.screen.cursor.row, t.grid.screen.cursor.col), (2, 2));
+    assert_eq!(t.grid.scrollback.len(), 0);
+}
+
+#[test]
+fn wide_characters_are_not_split_by_reflow() {
+    let mut t = Terminal::new(3, 10, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, "abc日本語xyz".as_bytes());
+    // 3 + 6 + 3 = 12 cells: at 6 columns the second wide char would straddle
+    // the margin, so it must move down whole, leaving a blank.
+    t.resize(3, 6);
+    assert_eq!(line(&t, 0), "abc日");
+    assert_eq!(line(&t, 1), "本語xy");
+    assert_eq!(line(&t, 2), "z");
+    assert!(t.grid.screen.rows[0].wrapped);
+    assert!(t.grid.screen.rows[0].cells[5].is_blank(), "filler where the wide char did not fit");
+    assert!(t.grid.screen.rows[1].cells[0].attrs.contains(Attrs::WIDE_LEADING));
+    t.resize(3, 20);
+    assert_eq!(line(&t, 0), "abc日本語xyz");
+}
+
+#[test]
+fn reflow_leaves_the_alternate_screen_alone_but_fixes_the_primary_beneath() {
+    let mut t = Terminal::new(4, 20, 100);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"0123456789abcdefghijKLM");
+    vt.feed(&mut t, b"\x1b[?1049h\x1b[1;1Hfull screen program");
+    t.resize(4, 10);
+    assert_eq!(line(&t, 0), "full scree", "alternate screen is clamped, not rewrapped");
+    vt.feed(&mut t, b"\x1b[?1049l");
+    assert_eq!(screen(&t)[..3], ["0123456789", "abcdefghij", "KLM"]);
+}
+
+#[test]
+fn images_follow_their_line_through_a_reflow() {
+    let mut t = Terminal::new(4, 20, 100);
+    let mut vt = Vt::new();
+    t.set_cell_px(8.0, 16.0);
+    vt.feed(&mut t, b"0123456789abcdefghij_wrapped\r\n");
+    vt.feed(&mut t, b"\x1bPq#0;2;100;0;0#0~~~~~~-\x1b\\");
+    assert_eq!(t.images.len(), 1);
+    let before = t.images[0].line;
+    assert_eq!(before, 2, "drawn on the third row");
+    t.resize(6, 10);
+    // The long line now takes three rows, so the image sits on the fourth.
+    assert_eq!(t.images[0].line, before + 1);
+}
+
+#[test]
+fn reflow_is_fast_enough_for_live_resizing() {
+    let mut t = Terminal::new(50, 200, 10_000);
+    let mut vt = Vt::new();
+    for i in 0..5000 {
+        vt.feed(&mut t, format!("line {i} {}\r\n", "x".repeat(150 + i % 100)).as_bytes());
+    }
+    let start = std::time::Instant::now();
+    t.resize(50, 120);
+    t.resize(50, 200);
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    assert!(ms < 400.0, "two reflows of 5k long lines took {ms:.0} ms");
+    eprintln!("two reflows of 5k long lines: {ms:.1} ms");
+    assert!(screen(&t).iter().any(|r| r.starts_with("line 4999 ")), "the last line is on screen");
+    assert_eq!(t.grid.screen.cursor.col, 0);
+}

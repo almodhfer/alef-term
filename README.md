@@ -170,7 +170,10 @@ can detect it, device status reports, mouse
 reporting (click, drag, any-motion, wheel; legacy and SGR), the kitty
 keyboard protocol's disambiguation flag, images via both sixel and the kitty
 graphics protocol, selection and clipboard, and resize propagated to the child
-via `TIOCSWINSZ`.
+via `TIOCSWINSZ`. Resizing reflows: rows broken by autowrap are joined back into
+the lines the program wrote and re-broken at the new width, in the screen and
+the scrollback, with the cursor and any images following their text. Explicit
+newlines are kept and the alternate screen is left to the program that owns it.
 
 Images — sixel, or the kitty graphics protocol — are pinned to the line they
 were drawn on, so they scroll with their text:
@@ -183,7 +186,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-158 tests, covering: VT and grid behaviour; font coverage and fallback; the
+166 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics

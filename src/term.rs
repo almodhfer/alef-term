@@ -230,7 +230,16 @@ impl Terminal {
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
-        self.grid.resize(rows, cols);
+        if let Some(map) = self.grid.resize(rows, cols) {
+            // Images stay with the text they were drawn beside.
+            self.images.retain_mut(|p| match map.map(p.line) {
+                Some(line) => {
+                    p.line = line;
+                    true
+                }
+                None => false,
+            });
+        }
         self.tab_stops = default_tabs(cols);
         self.damaged = true;
     }

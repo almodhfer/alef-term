@@ -252,6 +252,11 @@ impl App {
         let cols = (((size.width as f32 - 2.0 * px) / cw).floor() as usize).max(1);
         let rows = (((size.height as f32 - 2.0 * py) / ch).floor() as usize).max(1);
         if cols != self.term.grid.cols || rows != self.term.grid.rows {
+            if cols != self.term.grid.cols {
+                // Lines move when the width changes; a selection anchored to
+                // the old ones would land on the wrong text.
+                self.selection = None;
+            }
             self.term.resize(rows, cols);
         }
         self.term.set_cell_px(cw, ch);
