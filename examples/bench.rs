@@ -54,20 +54,30 @@ impl Rig {
         t0.elapsed().as_secs_f64() * 1000.0
     }
 
-    /// Draw through the GPU compositor and wait for it to finish; the
-    /// equivalent of a frame minus the swap.
-    fn draw_gpu(&mut self, gpu: &mut Gpu) -> f64 {
+    /// Draw through the GPU compositor: the CPU time to build and submit the
+    /// frame, which is what the app pays, and separately the wait for the GPU
+    /// to finish, which the app overlaps with the next frame.
+    fn draw_gpu(&mut self, gpu: &mut Gpu) -> (f64, f64) {
         let t0 = Instant::now();
         gpu.begin();
         self.renderer.draw(gpu, &self.term, &mut self.fonts, &Palette::dark(), None, true);
+        let t1 = Instant::now();
         gpu.render_headless().unwrap();
-        t0.elapsed().as_secs_f64() * 1000.0
+        let t2 = Instant::now();
+        ((t1 - t0).as_secs_f64() * 1000.0, (t2 - t1).as_secs_f64() * 1000.0)
     }
 }
 
 fn report(name: &str, rig: &Rig, ms: f64) {
     println!(
         "{name:36} {}x{} @ {}x{}px  {ms:7.2} ms/frame",
+        rig.term.grid.rows, rig.term.grid.cols, rig.w, rig.h
+    );
+}
+
+fn report_gpu(name: &str, rig: &Rig, cpu: f64, wait: f64) {
+    println!(
+        "{name:36} {}x{} @ {}x{}px  {cpu:7.2} ms/frame cpu, +{wait:.2} ms gpu wait",
         rig.term.grid.rows, rig.term.grid.cols, rig.w, rig.h
     );
 }
@@ -117,17 +127,21 @@ fn gpu_scenario(label: &str, size: f32, rows: usize, cols: usize, gen: &dyn Fn(u
         rig.draw_gpu(&mut gpu);
     }
     let n = 30;
-    let mut total = 0.0;
+    let (mut cpu, mut wait) = (0.0, 0.0);
     for _ in 0..n {
-        total += rig.draw_gpu(&mut gpu);
+        let (c, g) = rig.draw_gpu(&mut gpu);
+        cpu += c;
+        wait += g;
     }
-    report(&format!("{label}: static (gpu)"), &rig, total / n as f64);
-    let mut total = 0.0;
+    report_gpu(&format!("{label}: static (gpu)"), &rig, cpu / n as f64, wait / n as f64);
+    let (mut cpu, mut wait) = (0.0, 0.0);
     for f in 1..=n {
         rig.fill(&|r| gen(r, f));
-        total += rig.draw_gpu(&mut gpu);
+        let (c, g) = rig.draw_gpu(&mut gpu);
+        cpu += c;
+        wait += g;
     }
-    report(&format!("{label}: all rows changed (gpu)"), &rig, total / n as f64);
+    report_gpu(&format!("{label}: all rows changed (gpu)"), &rig, cpu / n as f64, wait / n as f64);
 }
 
 fn main() {

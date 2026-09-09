@@ -188,12 +188,15 @@ without opening a window, which is handy for eyeballing layout changes.
 a screen with one row changed, and a screen with every row changed — the last
 being what a multiplexer produces whenever one pane scrolls, since each row
 mixes content from several panes — first through the software canvas and then
-through the GPU. Layout and shaping dominate a changed frame either way: the
-rustybuzz shaping plan is built once per face and script rather than once per
-word, which is what keeps a full QHD grid (75×284) with every row changed near
-6 ms. Compositing is where the GPU pays off: a static Retina frame drops from
-about 5 ms of CPU blitting to about 2 ms, most of it waiting on the GPU, and in
-the running app a frame's draw phase averages a fifth of a millisecond.
+through the GPU, where the CPU cost of building and submitting the frame is
+reported separately from the wait for the GPU to finish, since the app never
+waits. Compositing is where the GPU pays off: a static Retina QHD frame
+(75×284 cells, 5120×3679 px) costs about 0.4 ms of CPU against 5 ms of software
+blitting, and the running app's draw phase averages a quarter of a millisecond
+at that size. A frame where every row changed costs about 4 ms either way,
+because that is layout and shaping: the rustybuzz shaping plan is built once
+per face and script rather than once per word, and glyph and layout caches
+are keyed through a folded-multiply hasher rather than SipHash.
 
 The wheel goes to the application when it has asked for mouse events, and to
 the terminal's own scrollback otherwise; `Shift` always chooses the scrollback.

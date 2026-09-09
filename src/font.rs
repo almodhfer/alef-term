@@ -150,7 +150,7 @@ pub struct Fonts {
     /// True when every monospace style covers printable ASCII, which lets the
     /// commonest characters skip the cmap walk entirely.
     ascii_in_mono: bool,
-    cache: HashMap<GlyphKey, Option<RasterGlyph>>,
+    cache: crate::hash::FastMap<GlyphKey, Option<RasterGlyph>>,
     next_glyph_id: u32,
     scalers: Vec<swash::scale::ScaleContext>,
     /// Extra scale applied to Arabic faces so their visual weight matches the
@@ -359,7 +359,7 @@ impl Fonts {
             table: [[0; 4]; SLOTS],
             has_slot: [false; SLOTS],
             ascii_in_mono: false,
-            cache: HashMap::new(),
+            cache: Default::default(),
             next_glyph_id: 0,
             scalers,
             arabic_scale: arabic_scale.unwrap_or(1.0),

@@ -22,7 +22,7 @@ struct Uniforms { screen: vec2<f32>, pad: vec2<f32> };
 @group(0) @binding(2) var tex: texture_2d<f32>;
 
 struct Instance {
-    @location(0) rect: vec4<f32>,
+    @location(0) rect: vec4<i32>,
     @location(1) uv: vec4<f32>,
     @location(2) color: vec4<f32>,
     @location(3) kind: u32,
@@ -42,7 +42,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> Vertex {
         vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), vec2<f32>(1.0, 1.0),
     );
     let c = corners[vi];
-    let px = inst.rect.xy + c * inst.rect.zw;
+    let px = vec2<f32>(inst.rect.xy) + c * vec2<f32>(inst.rect.zw);
     var out: Vertex;
     out.pos = vec4<f32>(px.x / u.screen.x * 2.0 - 1.0, 1.0 - px.y / u.screen.y * 2.0, 0.0, 1.0);
     out.uv = mix(inst.uv.xy, inst.uv.zw, c);
@@ -86,23 +86,29 @@ const MAX_PAGES: usize = 4;
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct Instance {
-    rect: [f32; 4],
+    /// x, y, w, h in pixels; a glyph can start a little off the left edge.
+    rect: [i16; 4],
     uv: [f32; 4],
-    color: [f32; 4],
+    /// r, g, b, a as bytes; the vertex format expands them to unorm floats.
+    color: [u8; 4],
     kind: u32,
 }
 
-const INSTANCE_SIZE: u64 = 64;
+/// Sint16x4 rect, Float32x4 uv, Unorm8x4 colour, Uint32 kind.
+const INSTANCE_SIZE: u64 = 32;
 
 impl Instance {
-    /// Serialise for the vertex buffer, matching the shader's attribute
-    /// layout: three vec4<f32> then a u32, padded to 64 bytes.
+    /// Serialise for the vertex buffer, in the attribute order above.
+    #[inline]
     fn write(&self, out: &mut Vec<u8>) {
-        for f in self.rect.iter().chain(&self.uv).chain(&self.color) {
+        for v in self.rect {
+            out.extend_from_slice(&v.to_ne_bytes());
+        }
+        for f in self.uv {
             out.extend_from_slice(&f.to_ne_bytes());
         }
+        out.extend_from_slice(&self.color);
         out.extend_from_slice(&self.kind.to_ne_bytes());
-        out.extend_from_slice(&[0; 12]);
     }
 }
 
@@ -157,11 +163,12 @@ pub struct Gpu {
     uniforms: wgpu::Buffer,
     blank: Tex,
     pages: Vec<Page>,
-    glyphs: HashMap<u32, Loc>,
+    /// Atlas location by glyph id; ids are dense, so a table beats a map.
+    glyphs: Vec<Option<Loc>>,
     images: HashMap<u64, (Tex, u64)>,
-    instances: Vec<Instance>,
-    /// `instances` serialised, reused across frames.
+    /// This frame's instances, already serialised for the vertex buffer.
     staging: Vec<u8>,
+    count: u32,
     runs: Vec<Run>,
     instance_buf: wgpu::Buffer,
     clear: wgpu::Color,
@@ -298,7 +305,7 @@ impl Gpu {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Uint32];
+        let attrs = wgpu::vertex_attr_array![0 => Sint16x4, 1 => Float32x4, 2 => Unorm8x4, 3 => Uint32];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("quad"),
             layout: Some(&pipeline_layout),
@@ -371,10 +378,10 @@ impl Gpu {
             uniforms,
             blank,
             pages: Vec::new(),
-            glyphs: HashMap::new(),
+            glyphs: Vec::new(),
             images: HashMap::new(),
-            instances: Vec::new(),
             staging: Vec::new(),
+            count: 0,
             runs: Vec::new(),
             instance_buf,
             clear: wgpu::Color::BLACK,
@@ -406,7 +413,8 @@ impl Gpu {
     /// Start recording a frame.
     pub fn begin(&mut self) {
         self.frame += 1;
-        self.instances.clear();
+        self.staging.clear();
+        self.count = 0;
         self.runs.clear();
         let frame = self.frame;
         self.images.retain(|_, (_, used)| frame - *used < IMAGE_TTL);
@@ -510,7 +518,7 @@ impl Gpu {
         }
         self.queue.write_buffer(&self.uniforms, 0, &screen_bytes);
 
-        let needed = INSTANCE_SIZE * self.instances.len().max(1) as u64;
+        let needed = (self.staging.len() as u64).max(INSTANCE_SIZE);
         if needed > self.instance_buf.size() {
             self.instance_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("instances"),
@@ -519,11 +527,7 @@ impl Gpu {
                 mapped_at_creation: false,
             });
         }
-        if !self.instances.is_empty() {
-            self.staging.clear();
-            for inst in &self.instances {
-                inst.write(&mut self.staging);
-            }
+        if !self.staging.is_empty() {
             self.queue.write_buffer(&self.instance_buf, 0, &self.staging);
         }
 
@@ -561,8 +565,9 @@ impl Gpu {
     }
 
     fn push(&mut self, key: Option<TexKey>, inst: Instance) {
-        let n = self.instances.len() as u32;
-        self.instances.push(inst);
+        let n = self.count;
+        self.count += 1;
+        inst.write(&mut self.staging);
         match (self.runs.last_mut(), key) {
             // Solid quads sample nothing, so they join whatever run is open.
             (Some(run), None) => run.end = n + 1,
@@ -680,8 +685,8 @@ fn make_tex(
     Tex { _texture: texture, bind_group }
 }
 
-fn rgba(c: Rgb) -> [f32; 4] {
-    [c.0 as f32 / 255.0, c.1 as f32 / 255.0, c.2 as f32 / 255.0, 1.0]
+fn rgba(c: Rgb) -> [u8; 4] {
+    [c.0, c.1, c.2, 255]
 }
 
 impl Target for Gpu {
@@ -700,17 +705,18 @@ impl Target for Gpu {
             b: c.2 as f64 / 255.0,
             a: 1.0,
         };
-        self.instances.clear();
+        self.staging.clear();
+        self.count = 0;
         self.runs.clear();
     }
 
     fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgb) {
         // Snap exactly as the software canvas does, so edges land on the
         // same pixels.
-        let x0 = x.round().max(0.0);
-        let y0 = y.round().max(0.0);
-        let x1 = (x + w).round().max(0.0);
-        let y1 = (y + h).round().max(0.0);
+        let x0 = x.round().max(0.0).min(i16::MAX as f32) as i16;
+        let y0 = y.round().max(0.0).min(i16::MAX as f32) as i16;
+        let x1 = (x + w).round().max(0.0).min(i16::MAX as f32) as i16;
+        let y1 = (y + h).round().max(0.0).min(i16::MAX as f32) as i16;
         if x0 >= x1 || y0 >= y1 {
             return;
         }
@@ -723,15 +729,18 @@ impl Target for Gpu {
     }
 
     fn glyph(&mut self, g: &RasterGlyph, ox: i32, oy: i32, fg: Rgb) {
-        if ox >= self.width as i32 || oy >= self.height as i32 {
+        if ox >= self.width as i32 || oy >= self.height as i32 || ox < i16::MIN as i32 || oy < i16::MIN as i32 {
             return;
         }
-        let loc = match self.glyphs.get(&g.id) {
-            Some(loc) => *loc,
+        let loc = match self.glyphs.get(g.id as usize).copied().flatten() {
+            Some(loc) => loc,
             None => {
                 let format = if g.color { wgpu::TextureFormat::Rgba8Unorm } else { wgpu::TextureFormat::R8Unorm };
                 let loc = self.atlas_insert(format, g.width, g.height, &g.data);
-                self.glyphs.insert(g.id, loc);
+                if self.glyphs.len() <= g.id as usize {
+                    self.glyphs.resize(g.id as usize + 1, None);
+                }
+                self.glyphs[g.id as usize] = Some(loc);
                 loc
             }
         };
@@ -741,7 +750,7 @@ impl Target for Gpu {
             }
         }
         self.push(Some(loc.key), Instance {
-            rect: [ox as f32, oy as f32, g.width as f32, g.height as f32],
+            rect: [ox as i16, oy as i16, g.width.min(i16::MAX as u32) as i16, g.height.min(i16::MAX as u32) as i16],
             uv: loc.uv,
             color: rgba(fg),
             kind: if g.color { KIND_PREMUL } else { KIND_MASK },
@@ -749,7 +758,7 @@ impl Target for Gpu {
     }
 
     fn image(&mut self, img: &Image, ox: i32, oy: i32) {
-        if img.width == 0 || img.height == 0 {
+        if img.width == 0 || img.height == 0 || ox >= self.width as i32 || oy >= self.height as i32 {
             return;
         }
         let frame = self.frame;
@@ -760,9 +769,9 @@ impl Target for Gpu {
             self.images.insert(img.id, (tex, frame));
         }
         self.push(Some(TexKey::Image(img.id)), Instance {
-            rect: [ox as f32, oy as f32, img.width as f32, img.height as f32],
+            rect: [ox.max(i16::MIN as i32) as i16, oy.max(i16::MIN as i32) as i16, img.width.min(i16::MAX as u32) as i16, img.height.min(i16::MAX as u32) as i16],
             uv: [0.0, 0.0, 1.0, 1.0],
-            color: [1.0; 4],
+            color: [255; 4],
             kind: KIND_STRAIGHT,
         });
     }
