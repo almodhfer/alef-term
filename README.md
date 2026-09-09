@@ -114,7 +114,13 @@ render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 --font-size <px>        base font size (default 15)
 --arabic-scale <f>      Arabic face scale (default: derived from metrics)
 --exec <cmd>            run a command at startup
+--size <cols>x<rows>    initial grid size (default 96x28)
+--scroll-lines <n>      lines per wheel notch (default 3)
+--touch-scroll <f>      trackpad scroll speed (default 3)
+--no-alternate-scroll   do not turn the wheel into arrow keys
 ```
+
+Set `ARABIC_TERM_PROFILE=1` to print per-phase frame times to stderr.
 
 | Key | Action |
 | --- | --- |
@@ -174,8 +180,14 @@ which is how the editor and htop cases above were verified.
 
 `cargo run --release --example render_test` renders a showcase screen to a file
 without opening a window, which is handy for eyeballing layout changes.
-`cargo run --release --example bench` reports frame times; a 50×200 grid at
-Retina resolution renders in about 1.1 ms.
+`cargo run --release --example bench` reports frame times for a static screen,
+a screen with one row changed, and a screen with every row changed — the last
+being what a multiplexer produces whenever one pane scrolls, since each row
+mixes content from several panes. A full QHD grid (75×284) draws in about 2 ms
+static and 6 ms with every row changed. Two things matter for that number: the
+rustybuzz shaping plan is built once per face and script rather than once per
+word, and on macOS the window is put in device RGB so CoreAnimation does not
+colour-convert the framebuffer on the CPU at every commit.
 
 The wheel goes to the application when it has asked for mouse events, and to
 the terminal's own scrollback otherwise; `Shift` always chooses the scrollback.

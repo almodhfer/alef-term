@@ -485,7 +485,9 @@ impl Layouter {
             if cursive {
                 buf.set_script(rustybuzz::script::ARABIC);
             }
-            let shaped = rustybuzz::shape(&fonts.faces[font].hb, &[], buf);
+            let face = &fonts.faces[font].hb;
+            let plan = fonts.plans.get(face, font, &mut buf);
+            let shaped = rustybuzz::shape_with_plan(face, plan, buf);
 
             let infos = shaped.glyph_infos();
             let poss = shaped.glyph_positions();

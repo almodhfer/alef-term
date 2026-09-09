@@ -16,6 +16,7 @@ pub struct Style {
 
 /// Which font in the stack a character should be drawn with.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[repr(usize)]
 pub enum Slot {
     /// Latin / box drawing / everything the monospace face covers.
     Mono,
@@ -99,10 +100,54 @@ pub struct GlyphKey {
     pub subpx: u8,
 }
 
+/// Shaping plans, one per face, direction and script.
+///
+/// Building a plan is by far the most expensive part of shaping a short run:
+/// rustybuzz walks the GSUB and GPOS tables collecting the script's features
+/// and lookups. `rustybuzz::shape` does that on every call, which made a
+/// full-screen repaint spend most of its time re-deriving the same plan once
+/// per word. Built once here, it is reused for every run that shares its
+/// properties.
+#[derive(Default)]
+pub struct PlanCache {
+    plans: HashMap<(usize, rustybuzz::Direction, Option<rustybuzz::Script>), rustybuzz::ShapePlan>,
+}
+
+impl PlanCache {
+    /// The plan for shaping `buf` with `face`, built on first use.
+    ///
+    /// The buffer's script and direction are settled here, before the key is
+    /// read, so the plan and the buffer cannot disagree about them.
+    pub fn get(
+        &mut self,
+        face: &rustybuzz::Face<'_>,
+        font: usize,
+        buf: &mut rustybuzz::UnicodeBuffer,
+    ) -> &rustybuzz::ShapePlan {
+        buf.guess_segment_properties();
+        let direction = buf.direction();
+        let script = Some(buf.script()).filter(|s| *s != rustybuzz::script::UNKNOWN);
+        self.plans
+            .entry((font, direction, script))
+            .or_insert_with(|| {
+                rustybuzz::ShapePlan::new(face, direction, script, buf.language().as_ref(), &[])
+            })
+    }
+}
+
 pub struct Fonts {
     pub faces: Vec<Face>,
+    pub plans: PlanCache,
     /// faces index by (slot, style).
     map: HashMap<(Slot, Style), usize>,
+    /// `map` with every fallback already resolved, indexed by slot and style.
+    /// Looked up once per character, so it must not cost a hash.
+    table: [[usize; 4]; SLOTS],
+    /// Whether a slot has any face at all.
+    has_slot: [bool; SLOTS],
+    /// True when every monospace style covers printable ASCII, which lets the
+    /// commonest characters skip the cmap walk entirely.
+    ascii_in_mono: bool,
     cache: HashMap<GlyphKey, Option<RasterGlyph>>,
     scalers: Vec<swash::scale::ScaleContext>,
     /// Extra scale applied to Arabic faces so their visual weight matches the
@@ -228,6 +273,15 @@ fn find_face(db: &fontdb::Database, family: &str, style: Style) -> Option<(Strin
     }
 }
 
+const SLOTS: usize = 5;
+
+impl Style {
+    #[inline]
+    fn index(self) -> usize {
+        self.bold as usize | (self.italic as usize) << 1
+    }
+}
+
 pub const STYLES: [Style; 4] = [
     Style { bold: false, italic: false },
     Style { bold: true, italic: false },
@@ -297,7 +351,11 @@ impl Fonts {
         let auto = arabic_scale.is_none();
         let mut f = Fonts {
             faces,
+            plans: PlanCache::default(),
             map,
+            table: [[0; 4]; SLOTS],
+            has_slot: [false; SLOTS],
+            ascii_in_mono: false,
             cache: HashMap::new(),
             scalers,
             arabic_scale: arabic_scale.unwrap_or(1.0),
@@ -308,6 +366,15 @@ impl Fonts {
             cell_h: 0.0,
             baseline: 0.0,
         };
+        for slot in [Slot::Mono, Slot::Arabic, Slot::Emoji, Slot::Symbols, Slot::Fallback] {
+            f.has_slot[slot as usize] = f.map.contains_key(&(slot, Style::default()));
+            for style in STYLES {
+                f.table[slot as usize][style.index()] = f.resolve_face(slot, style);
+            }
+        }
+        f.ascii_in_mono = STYLES
+            .iter()
+            .all(|&st| (' '..='~').all(|c| f.faces[f.face_id(Slot::Mono, st)].covers(c)));
         f.recompute_metrics();
         if auto {
             f.arabic_scale = f.derive_arabic_scale();
@@ -408,7 +475,12 @@ impl Fonts {
     }
 
     /// Font index for a slot+style, falling back through style then slot.
+    #[inline]
     pub fn face_id(&self, slot: Slot, style: Style) -> usize {
+        self.table[slot as usize][style.index()]
+    }
+
+    fn resolve_face(&self, slot: Slot, style: Style) -> usize {
         self.map
             .get(&(slot, style))
             .or_else(|| self.map.get(&(slot, Style { bold: style.bold, italic: false })))
@@ -420,23 +492,23 @@ impl Fonts {
 
     /// Pick the slot that should render `c`.
     pub fn slot_for(&self, c: char, style: Style) -> Slot {
+        // Printable ASCII is most of what a terminal shows; skip the cmap walk.
+        if self.ascii_in_mono && (' '..='~').contains(&c) {
+            return Slot::Mono;
+        }
         // Arabic script blocks (plus Arabic-Indic digits) go to the Arabic face
         // even when the mono face nominally has a glyph, because mono coverage
         // of Arabic is unshaped and ugly.
-        if is_arabic(c) {
-            if self.map.contains_key(&(Slot::Arabic, Style::default())) {
-                return Slot::Arabic;
-            }
+        if is_arabic(c) && self.has_slot[Slot::Arabic as usize] {
+            return Slot::Arabic;
         }
         let mono = &self.faces[self.face_id(Slot::Mono, style)];
         if mono.covers(c) {
             return Slot::Mono;
         }
         for slot in [Slot::Arabic, Slot::Symbols, Slot::Emoji, Slot::Fallback] {
-            if let Some(&i) = self.map.get(&(slot, Style::default())) {
-                if self.faces[i].covers(c) {
-                    return slot;
-                }
+            if self.has_slot[slot as usize] && self.faces[self.face_id(slot, Style::default())].covers(c) {
+                return slot;
             }
         }
         Slot::Mono

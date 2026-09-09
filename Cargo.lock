@@ -138,6 +138,7 @@ dependencies = [
  "fontdb",
  "libc",
  "log",
+ "objc2-app-kit 0.3.2",
  "png",
  "portable-pty",
  "rustybuzz",

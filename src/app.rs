@@ -93,6 +93,52 @@ pub struct App {
     wheel_remainder: f32,
     last_frame: Option<std::time::Instant>,
     scrollbar_fade: f32,
+    /// Frame timing, enabled with `ARABIC_TERM_PROFILE=1`.
+    profile: Option<Profile>,
+}
+
+/// Per-phase frame times, reported to stderr every 60 frames.
+struct Profile {
+    frames: u32,
+    sum: [std::time::Duration; 4],
+    max: [std::time::Duration; 4],
+    since: std::time::Instant,
+}
+
+impl Profile {
+    fn new() -> Profile {
+        Profile {
+            frames: 0,
+            sum: Default::default(),
+            max: Default::default(),
+            since: std::time::Instant::now(),
+        }
+    }
+
+    fn record(&mut self, phases: [std::time::Duration; 4]) {
+        self.frames += 1;
+        for (i, d) in phases.iter().enumerate() {
+            self.sum[i] += *d;
+            self.max[i] = self.max[i].max(*d);
+        }
+        if self.frames == 60 {
+            let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+            let total: std::time::Duration = self.sum.iter().sum();
+            let n = self.frames as f64;
+            eprintln!(
+                "frames: {} in {:.0} ms; avg {:.2} ms/frame  \
+                 [pty+scroll {:.2}/{:.2}  buffer {:.2}/{:.2}  draw {:.2}/{:.2}  present {:.2}/{:.2}] (avg/max ms)",
+                self.frames,
+                ms(self.since.elapsed()),
+                ms(total) / n,
+                ms(self.sum[0]) / n, ms(self.max[0]),
+                ms(self.sum[1]) / n, ms(self.max[1]),
+                ms(self.sum[2]) / n, ms(self.max[2]),
+                ms(self.sum[3]) / n, ms(self.max[3]),
+            );
+            *self = Profile::new();
+        }
+    }
 }
 
 impl App {
@@ -124,6 +170,7 @@ impl App {
             wheel_remainder: 0.0,
             last_frame: None,
             scrollbar_fade: 0.0,
+            profile: std::env::var_os("ARABIC_TERM_PROFILE").map(|_| Profile::new()),
         })
     }
 
@@ -413,6 +460,27 @@ impl App {
     }
 }
 
+/// Stop CoreAnimation colour-converting every frame on the CPU.
+///
+/// softbuffer tags its framebuffer as device RGB. A window is composited in
+/// its own colour space, and when the two differ CoreAnimation re-renders the
+/// whole image through CoreGraphics at every commit: 7.5 ms per frame at QHD,
+/// more than drawing the frame took. A terminal wants its colours shown as
+/// they are, so declare the window to be in device RGB and the two agree.
+#[cfg(target_os = "macos")]
+fn match_window_color_space(win: &Window) {
+    use objc2_app_kit::{NSColorSpace, NSView};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = win.window_handle() else { return };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
+    // SAFETY: winit hands out a valid NSView for the life of the window, and
+    // this runs on the main thread inside the event loop.
+    let view: &NSView = unsafe { h.ns_view.cast::<NSView>().as_ref() };
+    if let Some(window) = view.window() {
+        window.setColorSpace(Some(&NSColorSpace::deviceRGBColorSpace()));
+    }
+}
+
 impl ApplicationHandler<Wake> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -427,6 +495,8 @@ impl ApplicationHandler<Wake> for App {
             ));
         let win = Arc::new(el.create_window(attrs).expect("create window"));
         win.set_ime_allowed(true); // needed for Arabic input methods
+        #[cfg(target_os = "macos")]
+        match_window_color_space(&win);
 
         self.scale = win.scale_factor() as f32;
         self.fonts.set_size(self.cfg.font_size * self.scale);
@@ -748,8 +818,10 @@ impl ApplicationHandler<Wake> for App {
                 self.scroll_wheel(lines);
             }
             WindowEvent::RedrawRequested => {
+                let t0 = std::time::Instant::now();
                 self.drain_pty();
                 self.step_scroll();
+                let t1 = std::time::Instant::now();
                 let (Some(win), Some(surface)) = (&self.window, &mut self.surface) else { return };
                 let size = win.inner_size();
                 let (Some(w), Some(h)) =
@@ -761,6 +833,7 @@ impl ApplicationHandler<Wake> for App {
                     return;
                 }
                 let Ok(mut buffer) = surface.buffer_mut() else { return };
+                let t2 = std::time::Instant::now();
                 let mut canvas = Canvas {
                     buf: &mut buffer,
                     width: size.width as usize,
@@ -774,8 +847,13 @@ impl ApplicationHandler<Wake> for App {
                     self.selection,
                     self.focused,
                 );
+                let t3 = std::time::Instant::now();
                 let _ = buffer.present();
+                let t4 = std::time::Instant::now();
                 self.needs_redraw = false;
+                if let Some(p) = &mut self.profile {
+                    p.record([t1 - t0, t2 - t1, t3 - t2, t4 - t3]);
+                }
 
                 if win.title() != self.term.title {
                     win.set_title(&self.term.title);

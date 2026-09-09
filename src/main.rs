@@ -28,6 +28,15 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             "--no-alternate-scroll" => cfg.alternate_scroll = false,
+            "--size" => {
+                if let Some((c, r)) = args.next().and_then(|v| {
+                    let (c, r) = v.split_once('x')?;
+                    Some((c.parse().ok()?, r.parse().ok()?))
+                }) {
+                    cfg.cols = c;
+                    cfg.rows = r;
+                }
+            }
             "--exec" | "-e" => {
                 if let Some(v) = args.next() {
                     cfg.startup_cmd = Some(format!("{v}\n"));
@@ -40,6 +49,7 @@ fn main() -> anyhow::Result<()> {
                        --font-size <px>       base font size (default 15)\n  \
                        --arabic-scale <f>     Arabic face scale (default: from metrics)\n  \
                        --exec <cmd>           run a command at startup\n  \
+                       --size <cols>x<rows>   initial grid size (default 96x28)\n  \
                        --scroll-lines <n>     lines per wheel notch (default 3)\n  \
                        --touch-scroll <f>     trackpad scroll speed (default 3)\n  \
                        --no-alternate-scroll  do not turn the wheel into arrow\n  \

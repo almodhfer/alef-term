@@ -34,28 +34,48 @@ impl<'a> Canvas<'a> {
         }
     }
 
+    /// Clip a `gw`×`gh` bitmap placed at (`ox`, `oy`) to the canvas.
+    ///
+    /// Returns the source column range, the destination x range, and the
+    /// source/destination row pairs, so the blitters below run their inner
+    /// loops with no per-pixel bounds checks. Done once per glyph rather than
+    /// once per pixel; the blitters are the hottest loop of a static frame.
+    #[inline]
+    fn clip(
+        &self,
+        gw: usize,
+        gh: usize,
+        ox: i32,
+        oy: i32,
+    ) -> Option<(std::ops::Range<usize>, usize, std::ops::Range<usize>)> {
+        let x0 = ox.max(0);
+        let x1 = (ox + gw as i32).min(self.width as i32);
+        let y0 = oy.max(0);
+        let y1 = (oy + gh as i32).min(self.height as i32);
+        if x0 >= x1 || y0 >= y1 {
+            return None;
+        }
+        let sx = (x0 - ox) as usize..(x1 - ox) as usize;
+        Some((sx, x0 as usize, y0 as usize..y1 as usize))
+    }
+
     /// Blend an 8-bit coverage mask in `fg` over whatever is already there.
     fn blit_mask(&mut self, data: &[u8], gw: usize, gh: usize, ox: i32, oy: i32, fg: Rgb) {
+        let Some((sx, dx, ys)) = self.clip(gw, gh, ox, oy) else { return };
         let (fr, fg_, fb) = (fg.0 as u32, fg.1 as u32, fg.2 as u32);
-        for row in 0..gh {
-            let y = oy + row as i32;
-            if y < 0 || y as usize >= self.height {
-                continue;
-            }
-            let dst_base = y as usize * self.width;
-            let src_base = row * gw;
-            for col in 0..gw {
-                let a = data[src_base + col] as u32;
+        let solid = (fr << 16) | (fg_ << 8) | fb;
+        for y in ys {
+            let row = (y as i32 - oy) as usize;
+            let src = &data[row * gw + sx.start..row * gw + sx.end];
+            let base = y * self.width + dx;
+            let dst = &mut self.buf[base..base + src.len()];
+            for (d, &a) in dst.iter_mut().zip(src) {
+                let a = a as u32;
                 if a == 0 {
                     continue;
                 }
-                let x = ox + col as i32;
-                if x < 0 || x as usize >= self.width {
-                    continue;
-                }
-                let d = &mut self.buf[dst_base + x as usize];
                 if a == 255 {
-                    *d = (fr << 16) | (fg_ << 8) | fb;
+                    *d = solid;
                     continue;
                 }
                 let inv = 255 - a;
@@ -72,34 +92,28 @@ impl<'a> Canvas<'a> {
 
     /// Blend straight (non-premultiplied) RGBA image data.
     pub fn blit_rgba(&mut self, data: &[u8], gw: usize, gh: usize, ox: i32, oy: i32) {
-        for row in 0..gh {
-            let y = oy + row as i32;
-            if y < 0 || y as usize >= self.height {
-                continue;
-            }
-            let dst_base = y as usize * self.width;
-            for col in 0..gw {
-                let i = (row * gw + col) * 4;
-                let a = data[i + 3] as u32;
+        let Some((sx, dx, ys)) = self.clip(gw, gh, ox, oy) else { return };
+        for y in ys {
+            let row = (y as i32 - oy) as usize;
+            let src = &data[(row * gw + sx.start) * 4..(row * gw + sx.end) * 4];
+            let base = y * self.width + dx;
+            let dst = &mut self.buf[base..base + sx.len()];
+            for (d, px) in dst.iter_mut().zip(src.chunks_exact(4)) {
+                let a = px[3] as u32;
                 if a == 0 {
                     continue;
                 }
-                let x = ox + col as i32;
-                if x < 0 || x as usize >= self.width {
-                    continue;
-                }
-                let d = &mut self.buf[dst_base + x as usize];
                 if a == 255 {
-                    *d = ((data[i] as u32) << 16) | ((data[i + 1] as u32) << 8) | data[i + 2] as u32;
+                    *d = ((px[0] as u32) << 16) | ((px[1] as u32) << 8) | px[2] as u32;
                     continue;
                 }
                 let inv = 255 - a;
                 let dr = (*d >> 16) & 0xff;
                 let dg = (*d >> 8) & 0xff;
                 let db = *d & 0xff;
-                let r = (data[i] as u32 * a + dr * inv + 127) / 255;
-                let g = (data[i + 1] as u32 * a + dg * inv + 127) / 255;
-                let b = (data[i + 2] as u32 * a + db * inv + 127) / 255;
+                let r = (px[0] as u32 * a + dr * inv + 127) / 255;
+                let g = (px[1] as u32 * a + dg * inv + 127) / 255;
+                let b = (px[2] as u32 * a + db * inv + 127) / 255;
                 *d = (r << 16) | (g << 8) | b;
             }
         }
@@ -107,24 +121,18 @@ impl<'a> Canvas<'a> {
 
     /// Blend premultiplied-ish BGRA colour bitmap data (colour emoji).
     fn blit_color(&mut self, data: &[u8], gw: usize, gh: usize, ox: i32, oy: i32) {
-        for row in 0..gh {
-            let y = oy + row as i32;
-            if y < 0 || y as usize >= self.height {
-                continue;
-            }
-            let dst_base = y as usize * self.width;
-            for col in 0..gw {
-                let i = (row * gw + col) * 4;
-                let a = data[i + 3] as u32;
+        let Some((sx, dx, ys)) = self.clip(gw, gh, ox, oy) else { return };
+        for y in ys {
+            let row = (y as i32 - oy) as usize;
+            let src = &data[(row * gw + sx.start) * 4..(row * gw + sx.end) * 4];
+            let base = y * self.width + dx;
+            let dst = &mut self.buf[base..base + sx.len()];
+            for (d, px) in dst.iter_mut().zip(src.chunks_exact(4)) {
+                let a = px[3] as u32;
                 if a == 0 {
                     continue;
                 }
-                let x = ox + col as i32;
-                if x < 0 || x as usize >= self.width {
-                    continue;
-                }
-                let (sr, sg, sb) = (data[i] as u32, data[i + 1] as u32, data[i + 2] as u32);
-                let d = &mut self.buf[dst_base + x as usize];
+                let (sr, sg, sb) = (px[0] as u32, px[1] as u32, px[2] as u32);
                 let inv = 255 - a;
                 let dr = (*d >> 16) & 0xff;
                 let dg = (*d >> 8) & 0xff;
@@ -135,6 +143,63 @@ impl<'a> Canvas<'a> {
                 *d = (r.min(255) << 16) | (g.min(255) << 8) | b.min(255);
             }
         }
+    }
+}
+
+/// A folded-multiply hasher: each word is folded in with a 64×64→128-bit
+/// multiply whose halves are xored together, so every output bit depends on
+/// every input bit.
+///
+/// Every visible cell is hashed every frame to find its row's cached layout,
+/// and the cache trusts the 64-bit key alone. The standard hasher is SipHash,
+/// whose resistance to crafted collisions buys nothing here and which showed
+/// up in profiles at a few percent of a frame. This costs about the same as
+/// FxHash but, unlike it, mixes well enough that accidental collisions stay
+/// as unlikely as with SipHash.
+struct RowHasher(u64);
+
+impl Default for RowHasher {
+    fn default() -> Self {
+        RowHasher(0x243f_6a88_85a3_08d3)
+    }
+}
+
+impl std::hash::Hasher for RowHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        let mut chunks = bytes.chunks_exact(8);
+        for c in &mut chunks {
+            self.write_u64(u64::from_le_bytes(c.try_into().unwrap()));
+        }
+        for &b in chunks.remainder() {
+            self.write_u8(b);
+        }
+    }
+    #[inline]
+    fn write_u8(&mut self, i: u8) {
+        self.write_u64(i as u64)
+    }
+    #[inline]
+    fn write_u16(&mut self, i: u16) {
+        self.write_u64(i as u64)
+    }
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(i as u64)
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        let x = (self.0 ^ i).wrapping_add(0x9e37_79b9_7f4a_7c15);
+        let p = (x as u128).wrapping_mul(0xf135_7aea_2e62_a9c5);
+        self.0 = (p as u64) ^ ((p >> 64) as u64);
+    }
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64)
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
     }
 }
 
@@ -150,7 +215,7 @@ fn layout_key(
     generation: u64,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut h = RowHasher::default();
     cols.hash(&mut h);
     pre.hash(&mut h);
     post.hash(&mut h);
