@@ -70,9 +70,33 @@ pub enum BidiMode {
     Auto,
 }
 
+/// Cursor shape, from DECSCUSR (`CSI Ps SP q`) or the configuration.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum CursorShape {
+    #[default]
+    Block,
+    Underline,
+    Bar,
+}
+
+/// What an application asked the cursor to look like.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct CursorStyle {
+    pub shape: CursorShape,
+    /// `None` when the application has not said, so the configuration decides.
+    pub blink: Option<bool>,
+}
+
 pub struct Terminal {
     pub grid: Grid,
     pub modes: Modes,
+    /// Colours: owned here so OSC 4/10/11/12 can change and report them.
+    pub palette: crate::color::Palette,
+    /// The configured colours, restored by OSC 104/110/111/112.
+    default_palette: crate::color::Palette,
+    pub cursor_style: CursorStyle,
+    /// BEL characters received since the UI last looked.
+    pub bells: u32,
     pub bidi_mode: BidiMode,
     pub title: String,
     /// Bytes to send back up the PTY (device reports, mouse, focus events).
@@ -102,7 +126,6 @@ pub struct Terminal {
     tab_stops: Vec<bool>,
     /// Pixel size of a cell, needed to lay images out in rows.
     cell_px: (f32, f32),
-    palette_overrides: Vec<(u8, Rgb)>,
 }
 
 impl Terminal {
@@ -110,6 +133,10 @@ impl Terminal {
         Terminal {
             grid: Grid::new(rows, cols, scrollback),
             modes: Modes::default(),
+            palette: crate::color::Palette::dark(),
+            default_palette: crate::color::Palette::dark(),
+            cursor_style: CursorStyle::default(),
+            bells: 0,
             bidi_mode: BidiMode::default(),
             title: String::from("arabic-term"),
             replies: Vec::new(),
@@ -124,7 +151,6 @@ impl Terminal {
             dec_graphics: false,
             tab_stops: default_tabs(cols),
             cell_px: (8.0, 16.0),
-            palette_overrides: Vec::new(),
         }
     }
 
@@ -182,8 +208,25 @@ impl Terminal {
         self.images.retain(|p| p.line + 64 >= oldest);
     }
 
-    pub fn take_palette_overrides(&mut self) -> Vec<(u8, Rgb)> {
-        std::mem::take(&mut self.palette_overrides)
+    /// Install the configured colours, as both the live palette and the one
+    /// OSC resets return to.
+    pub fn set_palette(&mut self, p: crate::color::Palette) {
+        self.palette = p.clone();
+        self.default_palette = p;
+        self.damaged = true;
+    }
+
+    /// Answer an OSC colour query in xterm's `rgb:rrrr/gggg/bbbb` form,
+    /// terminated the same way the query was.
+    fn reply_color(&mut self, cmd: &str, c: Rgb, bell_terminated: bool) {
+        let end = if bell_terminated { "\x07" } else { "\x1b\\" };
+        let s = format!(
+            "\x1b]{cmd};rgb:{:04x}/{:04x}/{:04x}{end}",
+            c.0 as u32 * 257,
+            c.1 as u32 * 257,
+            c.2 as u32 * 257
+        );
+        self.replies.extend_from_slice(s.as_bytes());
     }
 
     pub fn resize(&mut self, rows: usize, cols: usize) {
@@ -650,7 +693,7 @@ impl Perform for Terminal {
     fn execute(&mut self, byte: u8) {
         self.damaged = true;
         match byte {
-            0x07 => {} // BEL
+            0x07 => self.bells = self.bells.saturating_add(1),
             0x08 => {
                 // Backspace: undo a pending wrap first, then step left.
                 if self.grid.screen.cursor.pending_wrap {
@@ -711,7 +754,7 @@ impl Perform for Terminal {
         self.place_image(img);
     }
 
-    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+    fn osc_dispatch(&mut self, params: &[&[u8]], bell_terminated: bool) {
         let Some(cmd) = params.first() else { return };
         match *cmd {
             b"0" | b"1" | b"2" => {
@@ -720,19 +763,73 @@ impl Perform for Terminal {
                 }
             }
             b"4" => {
-                // OSC 4 ; index ; rgb:RR/GG/BB
+                // OSC 4 ; index ; rgb:RR/GG/BB — or `?` to ask.
                 let mut i = 1;
                 while i + 1 < params.len() {
-                    if let (Ok(idx), Some(rgb)) = (
-                        std::str::from_utf8(params[i]).unwrap_or("").parse::<u16>(),
-                        parse_xcolor(params[i + 1]),
-                    ) {
-                        if idx < 256 {
-                            self.palette_overrides.push((idx as u8, rgb));
+                    let idx = std::str::from_utf8(params[i]).unwrap_or("").parse::<u16>();
+                    match (idx, params[i + 1]) {
+                        (Ok(idx), b"?") if idx < 256 => {
+                            let c = self.palette.colors[idx as usize];
+                            self.reply_color(&format!("4;{idx}"), c, bell_terminated);
                         }
+                        (Ok(idx), spec) if idx < 256 => {
+                            if let Some(rgb) = parse_xcolor(spec) {
+                                self.palette.colors[idx as usize] = rgb;
+                                self.damaged = true;
+                            }
+                        }
+                        _ => {}
                     }
                     i += 2;
                 }
+            }
+            b"104" => {
+                // Reset indexed colours: the listed ones, or all of them.
+                if params.len() == 1 {
+                    self.palette.colors = self.default_palette.colors;
+                }
+                for p in &params[1..] {
+                    if let Ok(idx) = std::str::from_utf8(p).unwrap_or("").parse::<usize>() {
+                        if idx < 256 {
+                            self.palette.colors[idx] = self.default_palette.colors[idx];
+                        }
+                    }
+                }
+                self.damaged = true;
+            }
+            b"10" | b"11" | b"12" => {
+                // Default foreground, background and cursor colour. Programs
+                // query these on startup to pick a light or dark theme, and
+                // some hang until they hear back.
+                let which = cmd[1] - b'0';
+                let Some(spec) = params.get(1) else { return };
+                if *spec == b"?" {
+                    let c = match which {
+                        0 => self.palette.fg,
+                        1 => self.palette.bg,
+                        _ => self.palette.cursor,
+                    };
+                    self.reply_color(&format!("1{which}"), c, bell_terminated);
+                } else if let Some(rgb) = parse_xcolor(spec) {
+                    match which {
+                        0 => self.palette.fg = rgb,
+                        1 => self.palette.bg = rgb,
+                        _ => self.palette.cursor = rgb,
+                    }
+                    self.damaged = true;
+                }
+            }
+            b"110" => {
+                self.palette.fg = self.default_palette.fg;
+                self.damaged = true;
+            }
+            b"111" => {
+                self.palette.bg = self.default_palette.bg;
+                self.damaged = true;
+            }
+            b"112" => {
+                self.palette.cursor = self.default_palette.cursor;
+                self.damaged = true;
             }
             b"52" => {
                 // OSC 52: set the clipboard. Params are ; <selection> ; <base64>.
@@ -984,6 +1081,18 @@ impl Perform for Terminal {
                 _ => {}
             },
             'c' => self.replies.extend_from_slice(b"\x1b[?6c"), // VT102
+            'q' if intermediates.contains(&b' ') => {
+                // DECSCUSR: 0/1 blinking block, 2 steady block, 3/4 underline,
+                // 5/6 bar. Zero means "whatever the terminal's default is".
+                let n = arg(0);
+                self.cursor_style = match n {
+                    0 => CursorStyle::default(),
+                    1 | 2 => CursorStyle { shape: CursorShape::Block, blink: Some(n == 1) },
+                    3 | 4 => CursorStyle { shape: CursorShape::Underline, blink: Some(n == 3) },
+                    5 | 6 => CursorStyle { shape: CursorShape::Bar, blink: Some(n == 5) },
+                    _ => return,
+                };
+            }
             'r' => {
                 let rows = self.rows();
                 let top = arg1(0) - 1;

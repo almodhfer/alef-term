@@ -6,7 +6,28 @@ use crate::font::{Fonts, RasterGlyph};
 use crate::grid::Attrs;
 use crate::layout::{Layouter, RowLayout};
 use crate::selection::Selection;
-use crate::term::Terminal;
+use crate::term::{CursorShape, Terminal};
+
+/// Everything about a frame that is not terminal content.
+#[derive(Clone, Copy, Debug)]
+pub struct DrawOpts {
+    pub selection: Option<Selection>,
+    /// Unfocused windows show a hollow cursor.
+    pub focused: bool,
+    /// False during the off half of a blink.
+    pub cursor_on: bool,
+    /// Overrides the terminal's own cursor shape when the application has not
+    /// asked for one; see [`crate::term::CursorStyle`].
+    pub cursor_shape: CursorShape,
+    /// Bell flash intensity, 0 for none.
+    pub bell: f32,
+}
+
+impl Default for DrawOpts {
+    fn default() -> Self {
+        DrawOpts { selection: None, focused: true, cursor_on: true, cursor_shape: CursorShape::Block, bell: 0.0 }
+    }
+}
 
 /// Somewhere a frame can be drawn: the software [`Canvas`], or the GPU.
 ///
@@ -262,10 +283,10 @@ impl Renderer {
         canvas: &mut T,
         term: &Terminal,
         fonts: &mut Fonts,
-        palette: &Palette,
-        selection: Option<Selection>,
-        focused: bool,
+        opts: &DrawOpts,
     ) {
+        let palette: &Palette = &term.palette;
+        let selection = opts.selection;
         let reverse = term.modes.contains(crate::term::Modes::REVERSE_VIDEO);
         let (def_fg, def_bg) =
             if reverse { (palette.bg, palette.fg) } else { (palette.fg, palette.bg) };
@@ -487,8 +508,25 @@ impl Renderer {
             }
         }
 
+        // --- bell: a brief flash of the window edge ---
+        if opts.bell > 0.01 {
+            let a = opts.bell.clamp(0.0, 1.0);
+            let blend = |c: u8, d: u8| ((c as f32 * a) + (d as f32 * (1.0 - a))) as u8;
+            let fg = palette.cursor;
+            let col = Rgb(blend(fg.0, def_bg.0), blend(fg.1, def_bg.1), blend(fg.2, def_bg.2));
+            let (w, h) = (canvas.width() as f32, canvas.height() as f32);
+            let t = 3.0;
+            canvas.fill_rect(0.0, 0.0, w, t, col);
+            canvas.fill_rect(0.0, h - t, w, t, col);
+            canvas.fill_rect(0.0, 0.0, t, h, col);
+            canvas.fill_rect(w - t, 0.0, t, h, col);
+        }
+
         // --- cursor, mapped through the row's logical->visual column map ---
-        if term.modes.contains(crate::term::Modes::CURSOR_VISIBLE) && term.grid.view_offset == 0 {
+        let cursor_shown = term.modes.contains(crate::term::Modes::CURSOR_VISIBLE)
+            && term.grid.view_offset == 0
+            && (opts.cursor_on || !opts.focused);
+        if cursor_shown {
             let cur = term.grid.screen.cursor;
             if cur.row < rows {
                 let Some(layout) = self.layouts.get(cur.row).and_then(|k| self.cache.get(k))
@@ -498,7 +536,24 @@ impl Renderer {
                 let col = layout.column_of(cur.col.min(cols.saturating_sub(1)));
                 let x = self.pad_x + col as f32 * cell_w;
                 let y = self.pad_y + (cur.row as f32 + frac) * cell_h;
-                if focused {
+                let shape = match term.cursor_style.blink {
+                    // An application that set a style gets its shape.
+                    Some(_) => term.cursor_style.shape,
+                    None => opts.cursor_shape,
+                };
+                if !opts.focused {
+                    // Hollow box when unfocused, whatever the shape.
+                    canvas.fill_rect(x, y, cell_w, 1.0, palette.cursor);
+                    canvas.fill_rect(x, y + cell_h - 1.0, cell_w, 1.0, palette.cursor);
+                    canvas.fill_rect(x, y, 1.0, cell_h, palette.cursor);
+                    canvas.fill_rect(x + cell_w - 1.0, y, 1.0, cell_h, palette.cursor);
+                } else if shape == CursorShape::Underline {
+                    canvas.fill_rect(x, y + cell_h - 2.0, cell_w, 2.0, palette.cursor);
+                } else if shape == CursorShape::Bar {
+                    // On the leading edge: the side the next character lands on.
+                    let bx = if layout.rtl { x + cell_w - 2.0 } else { x };
+                    canvas.fill_rect(bx, y, 2.0, cell_h, palette.cursor);
+                } else {
                     canvas.fill_rect(x, y, cell_w, cell_h, palette.cursor);
                     // Re-draw the glyph(s) of that cell in the background
                     // colour so the character stays legible under the block.
@@ -517,12 +572,6 @@ impl Renderer {
                         }
                     }
                     let _ = row;
-                } else {
-                    // Hollow box when unfocused.
-                    canvas.fill_rect(x, y, cell_w, 1.0, palette.cursor);
-                    canvas.fill_rect(x, y + cell_h - 1.0, cell_w, 1.0, palette.cursor);
-                    canvas.fill_rect(x, y, 1.0, cell_h, palette.cursor);
-                    canvas.fill_rect(x + cell_w - 1.0, y, 1.0, cell_h, palette.cursor);
                 }
                 // A thin marker on the leading edge shows the writing direction
                 // the cursor will advance in — invaluable in mixed text.

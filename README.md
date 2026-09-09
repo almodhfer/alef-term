@@ -152,7 +152,9 @@ underline/strikeout/inverse, cursor addressing, erase and insert/delete of
 characters and lines, `DECSTBM` scroll regions, the alternate screen, scrollback,
 autowrap with deferred wrap at the margin, wide (CJK) characters with spacers,
 combining marks, DEC line-drawing charset, bracketed paste, focus events, window title (OSC 0/2), palette changes (OSC 4),
-hyperlinks (OSC 8), clipboard writes (OSC 52), synchronized output (?2026) so
+hyperlinks (OSC 8), default colour set/query/reset (OSC 10/11/12, 104, 110–112) so
+programs can learn the background and pick a theme, cursor shape (DECSCUSR:
+block, underline, bar, blinking or steady), a visual bell, clipboard writes (OSC 52), synchronized output (?2026) so
 full-screen programs do not tear mid-repaint, mode reporting (DECRQM) so they
 can detect it, device status reports, mouse
 reporting (click, drag, any-motion, wheel; legacy and SGR), the kitty
@@ -171,7 +173,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-149 tests, covering: VT and grid behaviour; font coverage and fallback; the
+153 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics

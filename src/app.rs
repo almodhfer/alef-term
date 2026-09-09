@@ -1,13 +1,12 @@
 //! Window, input handling, and the frame loop.
 
-use crate::color::Palette;
 use crate::font::Fonts;
 use crate::frame::FramePacer;
 use crate::pty::Pty;
 use crate::gpu::Gpu;
-use crate::render::Renderer;
+use crate::render::{DrawOpts, Renderer};
 use crate::selection::{selected_text, Selection};
-use crate::term::{BidiMode, Modes, Terminal, Vt};
+use crate::term::{BidiMode, CursorShape, Modes, Terminal, Vt};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -48,6 +47,11 @@ pub struct Config {
     /// not asked for mouse events. Useful for `less` and `man`; unwanted for
     /// anything that binds the arrows to something destructive.
     pub alternate_scroll: bool,
+    /// Cursor look when the application has not asked for one.
+    pub cursor_shape: CursorShape,
+    pub cursor_blink: bool,
+    /// Flash the window edge on BEL.
+    pub visual_bell: bool,
 }
 
 impl Default for Config {
@@ -61,6 +65,9 @@ impl Default for Config {
             startup_cmd: None,
             wheel: Default::default(),
             alternate_scroll: true,
+            cursor_shape: CursorShape::Block,
+            cursor_blink: false,
+            visual_bell: true,
         }
     }
 }
@@ -76,7 +83,6 @@ pub struct App {
     pty: Option<Pty>,
     fonts: Fonts,
     renderer: Renderer,
-    palette: Palette,
     proxy: EventLoopProxy<Wake>,
     modifiers: ModifiersState,
     scale: f32,
@@ -103,7 +109,18 @@ pub struct App {
     refresh_millihertz: Option<u32>,
     /// Frame timing, enabled with `ARABIC_TERM_PROFILE=1`.
     profile: Option<Profile>,
+    /// Cursor blink: the current phase and when it next flips. Typing resets
+    /// the phase to visible, so the cursor never vanishes under the fingers.
+    blink_on: bool,
+    blink_at: std::time::Instant,
+    /// When the last bell rang, for the flash.
+    bell_at: Option<std::time::Instant>,
 }
+
+/// Half a blink period.
+const BLINK_HALF: std::time::Duration = std::time::Duration::from_millis(530);
+/// How long the bell flash lasts.
+const BELL_FLASH: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Per-phase frame times, reported to stderr every 60 frames.
 struct Profile {
@@ -162,7 +179,6 @@ impl App {
             pty: None,
             fonts,
             renderer: Renderer::new(),
-            palette: Palette::dark(),
             proxy,
             modifiers: ModifiersState::empty(),
             scale: 1.0,
@@ -180,6 +196,9 @@ impl App {
             last_frame: None,
             scrollbar_fade: 0.0,
             profile: std::env::var_os("ARABIC_TERM_PROFILE").map(|_| Profile::new()),
+            blink_on: true,
+            blink_at: std::time::Instant::now() + BLINK_HALF,
+            bell_at: None,
             frames: FramePacer::default(),
             pty_pending: false,
             refresh_millihertz: None,
@@ -188,6 +207,25 @@ impl App {
 
     fn cell_size(&self) -> (f32, f32) {
         (self.fonts.cell_w, self.fonts.cell_h)
+    }
+
+    /// Whether the cursor is blinking right now: the application or the
+    /// configuration asked for it, the window is focused, and the view is on
+    /// the live screen where the cursor is drawn at all.
+    fn blinking(&self) -> bool {
+        self.term.cursor_style.blink.unwrap_or(self.cfg.cursor_blink)
+            && self.focused
+            && self.term.modes.contains(Modes::CURSOR_VISIBLE)
+            && self.term.grid.view_offset == 0
+    }
+
+    /// Show the cursor and restart the blink period, as on every keystroke.
+    fn blink_reset(&mut self) {
+        if !self.blink_on {
+            self.needs_redraw = true;
+        }
+        self.blink_on = true;
+        self.blink_at = std::time::Instant::now() + BLINK_HALF;
     }
 
     /// Recompute the grid from the window size and tell the child about it.
@@ -235,8 +273,9 @@ impl App {
                 self.needs_redraw = true;
             }
         }
-        for (idx, rgb) in self.term.take_palette_overrides() {
-            self.palette.colors[idx as usize] = rgb;
+        if std::mem::take(&mut self.term.bells) > 0 && self.cfg.visual_bell {
+            self.bell_at = Some(std::time::Instant::now());
+            self.needs_redraw = true;
         }
         if let Some(text) = self.term.clipboard_write.take() {
             if let Some(cb) = &mut self.clipboard {
@@ -555,6 +594,7 @@ impl ApplicationHandler<Wake> for App {
                 if event.state != ElementState::Pressed {
                     return;
                 }
+                self.blink_reset();
                 let sup = self.modifiers.super_key();
                 if sup {
                     // macOS command bindings.
@@ -796,6 +836,7 @@ impl ApplicationHandler<Wake> for App {
                 let t0 = std::time::Instant::now();
                 self.step_scroll();
                 let t1 = std::time::Instant::now();
+                let cursor_on = self.blink_on || !self.blinking();
                 let (Some(win), Some(gpu)) = (&self.window, &mut self.gpu) else { return };
                 let size = win.inner_size();
                 if size.width == 0 || size.height == 0 {
@@ -807,14 +848,19 @@ impl ApplicationHandler<Wake> for App {
                     self.atlas_generation = self.fonts.generation();
                 }
                 gpu.begin();
-                self.renderer.draw(
-                    gpu,
-                    &self.term,
-                    &mut self.fonts,
-                    &self.palette,
-                    self.selection,
-                    self.focused,
-                );
+                let bell = self
+                    .bell_at
+                    .map(|t| 1.0 - t.elapsed().as_secs_f32() / BELL_FLASH.as_secs_f32())
+                    .filter(|b| *b > 0.0)
+                    .unwrap_or(0.0);
+                let opts = DrawOpts {
+                    selection: self.selection,
+                    focused: self.focused,
+                    cursor_on,
+                    cursor_shape: self.cfg.cursor_shape,
+                    bell,
+                };
+                self.renderer.draw(gpu, &self.term, &mut self.fonts, &opts);
                 let t2 = std::time::Instant::now();
                 if let Err(e) = gpu.flush(win) {
                     log::warn!("present failed: {e:#}");
@@ -848,6 +894,22 @@ impl ApplicationHandler<Wake> for App {
             || self.renderer.scrollbar_alpha > 0.01 && self.scroll.at_bottom();
         let now = std::time::Instant::now();
         let mut deadline = None;
+        if self.blinking() {
+            if now >= self.blink_at {
+                self.blink_on = !self.blink_on;
+                self.blink_at = now + BLINK_HALF;
+                self.needs_redraw = true;
+            }
+            deadline = Some(self.blink_at);
+        } else if !self.blink_on {
+            self.blink_on = true;
+            self.needs_redraw = true;
+        }
+        let bell_active = self.bell_at.is_some_and(|t| t.elapsed() < BELL_FLASH);
+        if !bell_active {
+            self.bell_at = None;
+        }
+        let animating = animating || bell_active;
         if self.needs_redraw || animating {
             if let Some(w) = &self.window {
                 let due = self.frames.deadline(now, self.refresh_millihertz);

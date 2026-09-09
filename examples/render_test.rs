@@ -1,8 +1,7 @@
 //! Render a showcase screen offline to a PPM, without opening a window.
 //! Useful for eyeballing layout changes and for regression screenshots.
-use arabic_term::color::Palette;
 use arabic_term::font::Fonts;
-use arabic_term::render::{Canvas, Renderer};
+use arabic_term::render::{Canvas, DrawOpts, Renderer};
 use arabic_term::term::{BidiMode, Terminal, Vt};
 
 const SCRIPT: &str = concat!(
@@ -56,7 +55,7 @@ fn main() -> anyhow::Result<()> {
     let h = (rows as f32 * fonts.cell_h).ceil() as usize + 2 * renderer.pad_y as usize;
     let mut buf = vec![0u32; w * h];
     let mut canvas = Canvas { buf: &mut buf, width: w, height: h };
-    renderer.draw(&mut canvas, &term, &mut fonts, &Palette::dark(), None, true);
+    renderer.draw(&mut canvas, &term, &mut fonts, &DrawOpts::default());
 
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
     for px in buf.iter() {

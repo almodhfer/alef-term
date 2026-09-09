@@ -3,7 +3,7 @@
 use arabic_term::color::Palette;
 use arabic_term::font::Fonts;
 use arabic_term::gpu::Gpu;
-use arabic_term::render::{Canvas, Renderer, Target};
+use arabic_term::render::{Canvas, DrawOpts, Renderer, Target};
 use arabic_term::term::{Terminal, Vt};
 
 const SCRIPT: &str = concat!(
@@ -21,7 +21,7 @@ const SCRIPT: &str = concat!(
 );
 
 fn draw<T: Target>(target: &mut T, term: &Terminal, fonts: &mut Fonts, renderer: &mut Renderer) {
-    renderer.draw(target, term, fonts, &Palette::dark(), None, true);
+    renderer.draw(target, term, fonts, &DrawOpts::default());
 }
 
 #[test]

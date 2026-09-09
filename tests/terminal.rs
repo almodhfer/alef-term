@@ -376,3 +376,60 @@ fn images_are_pruned_once_they_fall_out_of_scrollback() {
     t.prune_images();
     assert!(t.images.is_empty(), "an image far outside the scrollback is dropped");
 }
+
+#[test]
+fn decscusr_sets_the_cursor_shape_and_blink() {
+    use arabic_term::term::{CursorShape, CursorStyle};
+    let t = run(2, 10, "\x1b[5 q");
+    assert_eq!(t.cursor_style, CursorStyle { shape: CursorShape::Bar, blink: Some(true) });
+    let t = run(2, 10, "\x1b[4 q");
+    assert_eq!(t.cursor_style, CursorStyle { shape: CursorShape::Underline, blink: Some(false) });
+    // Zero hands the choice back to the terminal's configuration.
+    let t = run(2, 10, "\x1b[3 q\x1b[0 q");
+    assert_eq!(t.cursor_style, CursorStyle::default());
+    // An unknown value changes nothing.
+    let t = run(2, 10, "\x1b[6 q\x1b[9 q");
+    assert_eq!(t.cursor_style.shape, CursorShape::Bar);
+}
+
+#[test]
+fn osc_colour_queries_are_answered_in_xterm_form() {
+    let mut t = run(2, 10, "");
+    let bg = t.palette.bg;
+    t.replies.clear();
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1b]11;?\x1b\\");
+    let want = format!("\x1b]11;rgb:{:04x}/{:04x}/{:04x}\x1b\\", bg.0 as u32 * 257, bg.1 as u32 * 257, bg.2 as u32 * 257);
+    assert_eq!(String::from_utf8_lossy(&t.replies), want);
+    // A BEL-terminated query gets a BEL-terminated answer.
+    t.replies.clear();
+    vt.feed(&mut t, b"\x1b]10;?\x07");
+    assert!(t.replies.starts_with(b"\x1b]10;rgb:") && t.replies.ends_with(b"\x07"));
+    t.replies.clear();
+    vt.feed(&mut t, b"\x1b]4;1;?\x07");
+    assert!(t.replies.starts_with(b"\x1b]4;1;rgb:"));
+}
+
+#[test]
+fn osc_colour_sets_and_resets() {
+    use arabic_term::color::Rgb;
+    let mut t = run(2, 10, "");
+    let (fg0, bg0) = (t.palette.fg, t.palette.bg);
+    let mut vt = Vt::new();
+    vt.feed(&mut t, b"\x1b]10;rgb:ff/00/00\x07\x1b]11;#00ff00\x07\x1b]12;rgb:0000/0000/ffff\x07");
+    assert_eq!(t.palette.fg, Rgb(255, 0, 0));
+    assert_eq!(t.palette.bg, bg0, "unsupported #rrggbb form is ignored, not misparsed");
+    assert_eq!(t.palette.cursor, Rgb(0, 0, 255));
+    vt.feed(&mut t, b"\x1b]4;1;rgb:12/34/56\x07");
+    assert_eq!(t.palette.colors[1], Rgb(0x12, 0x34, 0x56));
+    vt.feed(&mut t, b"\x1b]110\x07\x1b]104\x07");
+    assert_eq!(t.palette.fg, fg0);
+    assert_ne!(t.palette.colors[1], Rgb(0x12, 0x34, 0x56));
+}
+
+#[test]
+fn bel_is_counted_for_the_ui() {
+    let t = run(2, 10, "a\x07b\x07\x07");
+    assert_eq!(t.bells, 3);
+    assert_eq!(line(&t, 0), "ab");
+}

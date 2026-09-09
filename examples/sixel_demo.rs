@@ -1,7 +1,6 @@
 //! Render a sixel image plus Arabic text offline, to check images land right.
-use arabic_term::color::Palette;
 use arabic_term::font::Fonts;
-use arabic_term::render::{Canvas, Renderer};
+use arabic_term::render::{Canvas, DrawOpts, Renderer};
 use arabic_term::term::{Terminal, Vt};
 
 fn main() -> anyhow::Result<()> {
@@ -36,7 +35,7 @@ fn main() -> anyhow::Result<()> {
     let h = (rows as f32 * fonts.cell_h) as usize + 4;
     let mut buf = vec![0u32; w * h];
     let mut canvas = Canvas { buf: &mut buf, width: w, height: h };
-    renderer.draw(&mut canvas, &term, &mut fonts, &Palette::dark(), None, true);
+    renderer.draw(&mut canvas, &term, &mut fonts, &DrawOpts::default());
 
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
     for px in buf.iter() {

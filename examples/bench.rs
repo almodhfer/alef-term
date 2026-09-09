@@ -3,10 +3,9 @@
 //! Measures the cases a full-screen program actually produces, not just a
 //! static screen: a warm frame where nothing changed, a frame where one row
 //! changed, and a frame where every row changed, at a QHD-sized grid.
-use arabic_term::color::Palette;
 use arabic_term::font::Fonts;
 use arabic_term::gpu::Gpu;
-use arabic_term::render::{Canvas, Renderer};
+use arabic_term::render::{Canvas, DrawOpts, Renderer};
 use arabic_term::term::{Terminal, Vt};
 use std::time::Instant;
 
@@ -50,7 +49,7 @@ impl Rig {
     fn draw(&mut self) -> f64 {
         let t0 = Instant::now();
         let mut c = Canvas { buf: &mut self.buf, width: self.w, height: self.h };
-        self.renderer.draw(&mut c, &self.term, &mut self.fonts, &Palette::dark(), None, true);
+        self.renderer.draw(&mut c, &self.term, &mut self.fonts, &DrawOpts::default());
         t0.elapsed().as_secs_f64() * 1000.0
     }
 
@@ -60,7 +59,7 @@ impl Rig {
     fn draw_gpu(&mut self, gpu: &mut Gpu) -> (f64, f64) {
         let t0 = Instant::now();
         gpu.begin();
-        self.renderer.draw(gpu, &self.term, &mut self.fonts, &Palette::dark(), None, true);
+        self.renderer.draw(gpu, &self.term, &mut self.fonts, &DrawOpts::default());
         let t1 = Instant::now();
         gpu.render_headless().unwrap();
         let t2 = Instant::now();
