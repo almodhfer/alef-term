@@ -5,6 +5,7 @@
 //! changed, and a frame where every row changed, at a QHD-sized grid.
 use arabic_term::color::Palette;
 use arabic_term::font::Fonts;
+use arabic_term::gpu::Gpu;
 use arabic_term::render::{Canvas, Renderer};
 use arabic_term::term::{Terminal, Vt};
 use std::time::Instant;
@@ -52,6 +53,16 @@ impl Rig {
         self.renderer.draw(&mut c, &self.term, &mut self.fonts, &Palette::dark(), None, true);
         t0.elapsed().as_secs_f64() * 1000.0
     }
+
+    /// Draw through the GPU compositor and wait for it to finish; the
+    /// equivalent of a frame minus the swap.
+    fn draw_gpu(&mut self, gpu: &mut Gpu) -> f64 {
+        let t0 = Instant::now();
+        gpu.begin();
+        self.renderer.draw(gpu, &self.term, &mut self.fonts, &Palette::dark(), None, true);
+        gpu.render_headless().unwrap();
+        t0.elapsed().as_secs_f64() * 1000.0
+    }
 }
 
 fn report(name: &str, rig: &Rig, ms: f64) {
@@ -92,6 +103,31 @@ fn scenario(label: &str, size: f32, rows: usize, cols: usize, gen: &dyn Fn(usize
         total += rig.draw();
     }
     report(&format!("{label}: all rows changed"), &rig, total / n as f64);
+}
+
+/// The same static and all-rows-changed cases, composited on the GPU.
+fn gpu_scenario(label: &str, size: f32, rows: usize, cols: usize, gen: &dyn Fn(usize, usize) -> String) {
+    let mut rig = Rig::new(size, rows, cols);
+    let Ok(mut gpu) = Gpu::headless(rig.w as u32, rig.h as u32) else {
+        println!("{label}: no GPU available");
+        return;
+    };
+    rig.fill(&|r| gen(r, 0));
+    for _ in 0..3 {
+        rig.draw_gpu(&mut gpu);
+    }
+    let n = 30;
+    let mut total = 0.0;
+    for _ in 0..n {
+        total += rig.draw_gpu(&mut gpu);
+    }
+    report(&format!("{label}: static (gpu)"), &rig, total / n as f64);
+    let mut total = 0.0;
+    for f in 1..=n {
+        rig.fill(&|r| gen(r, f));
+        total += rig.draw_gpu(&mut gpu);
+    }
+    report(&format!("{label}: all rows changed (gpu)"), &rig, total / n as f64);
 }
 
 fn main() {
@@ -145,4 +181,7 @@ fn main() {
     scenario("arabic", 15.0, 75, 284, &arabic);
     println!("--- retina full screen, 2x scale: 75x284 at 30px ---");
     scenario("tui @2x", 30.0, 75, 284, &tui);
+    println!("--- the same, composited on the GPU ---");
+    gpu_scenario("tui", 15.0, 75, 284, &tui);
+    gpu_scenario("tui @2x", 30.0, 75, 284, &tui);
 }

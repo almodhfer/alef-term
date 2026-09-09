@@ -7,7 +7,7 @@
 //! ourselves makes them fill the cell exactly and always connect.
 
 use crate::color::Rgb;
-use crate::render::Canvas;
+use crate::render::Target;
 
 /// Stroke weight of each arm: 0 none, 1 light, 2 heavy, 3 double.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -97,7 +97,7 @@ pub fn is_procedural(c: char) -> bool {
 }
 
 /// Draw `c` filling the cell rect exactly.
-pub fn draw(canvas: &mut Canvas, c: char, x: f32, y: f32, w: f32, h: f32, fg: Rgb) {
+pub fn draw(canvas: &mut impl Target, c: char, x: f32, y: f32, w: f32, h: f32, fg: Rgb) {
     let x = x.round();
     let y = y.round();
     let cp = c as u32;

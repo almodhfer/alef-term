@@ -132,7 +132,7 @@ fn raw_to_rgba(bytes: &[u8], keys: &HashMap<String, String>, channels: usize) ->
     for px in bytes[..need].chunks_exact(channels) {
         rgba.extend_from_slice(&[px[0], px[1], px[2], if channels == 4 { px[3] } else { 255 }]);
     }
-    Some(Image { width: w, height: h, rgba })
+    Some(Image::new(w, h, rgba))
 }
 
 fn decode_png(bytes: &[u8]) -> Option<Image> {
@@ -157,7 +157,7 @@ fn decode_png(bytes: &[u8]) -> Option<Image> {
         }
         _ => return None,
     };
-    Some(Image { width: w, height: h, rgba })
+    Some(Image::new(w, h, rgba))
 }
 
 /// Standard base64, tolerating padding and whitespace.

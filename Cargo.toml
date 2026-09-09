@@ -6,7 +6,6 @@ description = "A terminal emulator that renders Arabic correctly: full bidi + co
 
 [dependencies]
 winit = "0.30.13"
-softbuffer = "0.4.8"
 rustybuzz = "0.20.1"
 swash = "0.2.10"
 unicode-bidi = "0.3.18"
@@ -23,9 +22,8 @@ bitflags = "2.13"
 log = "0.4"
 env_logger = "0.11"
 libc = "0.2"
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSColorSpace", "NSResponder", "NSView", "NSWindow"] }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "metal"] }
+pollster = "0.4"
 
 [dev-dependencies]
 winit = "0.30.13"

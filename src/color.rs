@@ -7,7 +7,7 @@ pub struct Rgb(pub u8, pub u8, pub u8);
 impl Rgb {
     #[inline]
     pub const fn pack(self) -> u32 {
-        // softbuffer expects 0RGB in the low 24 bits of a u32.
+        // 0RGB in the low 24 bits of a u32, the software canvas layout.
         ((self.0 as u32) << 16) | ((self.1 as u32) << 8) | self.2 as u32
     }
 }

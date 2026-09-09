@@ -81,6 +81,8 @@ impl Face {
 
 /// A rasterised glyph: 8-bit coverage, or straight BGRA for colour emoji.
 pub struct RasterGlyph {
+    /// Unique for the life of the process, so a GPU atlas can key on it.
+    pub id: u32,
     pub width: u32,
     pub height: u32,
     /// Offset of the bitmap's top-left from the pen origin on the baseline.
@@ -149,6 +151,7 @@ pub struct Fonts {
     /// commonest characters skip the cmap walk entirely.
     ascii_in_mono: bool,
     cache: HashMap<GlyphKey, Option<RasterGlyph>>,
+    next_glyph_id: u32,
     scalers: Vec<swash::scale::ScaleContext>,
     /// Extra scale applied to Arabic faces so their visual weight matches the
     /// Latin monospace face; naskh designs sit much smaller on the em.
@@ -357,6 +360,7 @@ impl Fonts {
             has_slot: [false; SLOTS],
             ascii_in_mono: false,
             cache: HashMap::new(),
+            next_glyph_id: 0,
             scalers,
             arabic_scale: arabic_scale.unwrap_or(1.0),
             auto_arabic_scale: auto,
@@ -555,7 +559,10 @@ impl Fonts {
         if img.placement.width == 0 || img.placement.height == 0 {
             return None;
         }
+        let id = self.next_glyph_id;
+        self.next_glyph_id += 1;
         Some(RasterGlyph {
+            id,
             width: img.placement.width,
             height: img.placement.height,
             left: img.placement.left,

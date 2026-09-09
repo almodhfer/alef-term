@@ -169,7 +169,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-136 tests, covering: VT and grid behaviour; font coverage and fallback; the
+137 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics
@@ -187,11 +187,13 @@ without opening a window, which is handy for eyeballing layout changes.
 `cargo run --release --example bench` reports frame times for a static screen,
 a screen with one row changed, and a screen with every row changed — the last
 being what a multiplexer produces whenever one pane scrolls, since each row
-mixes content from several panes. A full QHD grid (75×284) draws in about 2 ms
-static and 6 ms with every row changed. Two things matter for that number: the
+mixes content from several panes — first through the software canvas and then
+through the GPU. Layout and shaping dominate a changed frame either way: the
 rustybuzz shaping plan is built once per face and script rather than once per
-word, and on macOS the window is put in device RGB so CoreAnimation does not
-colour-convert the framebuffer on the CPU at every commit.
+word, which is what keeps a full QHD grid (75×284) with every row changed near
+6 ms. Compositing is where the GPU pays off: a static Retina frame drops from
+about 5 ms of CPU blitting to about 2 ms, most of it waiting on the GPU, and in
+the running app a frame's draw phase averages a fifth of a millisecond.
 
 The wheel goes to the application when it has asked for mouse events, and to
 the terminal's own scrollback otherwise; `Shift` always chooses the scrollback.
@@ -213,12 +215,22 @@ monopolize the UI with a multi-megabyte parse pass.
 Input writes run on a separate thread so a child that stops reading cannot
 freeze mouse and keyboard handling.
 
-It deliberately does **not** do damage tracking. That was measured rather than
-assumed: partial redraw needs a persistent shadow framebuffer, and at Retina
-resolution copying that shadow to the window costs 0.78 ms against 0.90 ms to
-simply repaint every row. The bookkeeping would buy about a tenth of a
-millisecond and cost a great deal of complexity, so the renderer repaints whole
-frames and spends its effort on not drawing frames nobody asked for.
+### Rendering
+
+Layout, shaping and glyph rasterisation happen on the CPU; only compositing
+is on the GPU, through [wgpu]. The renderer emits rectangles, glyphs and
+images to a `Target` trait, and the GPU target turns each into one instanced
+quad: glyphs are rasterised by swash once and uploaded to an atlas, images
+become textures, and the quads are drawn in emission order so layering is
+identical to the software canvas. The software canvas is kept as the second
+`Target`; the headless tests and examples render through it, and `tests/gpu.rs`
+renders a busy screen both ways and requires every pixel to match within
+rounding.
+
+It deliberately does **not** do damage tracking. Repainting a whole frame is a
+few thousand quads, cheaper than the bookkeeping to avoid it, so the renderer
+repaints whole frames and spends its effort on not drawing frames nobody asked
+for.
 
 ## Layout
 
@@ -236,10 +248,11 @@ frames and spends its effort on not drawing frames nobody asked for.
 | `src/sixel.rs` | sixel image decoding |
 | `src/kitty_graphics.rs` | kitty graphics protocol |
 | `src/pty.rs` | PTY and the shell process |
+| `src/gpu.rs` | GPU compositor: glyph atlas, image textures, instanced quads |
 | `src/app.rs` | window, input, event loop |
 
 Built on [rustybuzz] (shaping), [swash] (rasterisation), [unicode-bidi] (UAX #9),
-[vte] (ANSI parsing), [portable-pty], [winit] and [softbuffer]. No `unsafe`.
+[vte] (ANSI parsing), [portable-pty], [winit] and [wgpu]. No `unsafe`.
 
 [rustybuzz]: https://github.com/harfbuzz/rustybuzz
 [swash]: https://github.com/dfrg/swash
@@ -247,4 +260,4 @@ Built on [rustybuzz] (shaping), [swash] (rasterisation), [unicode-bidi] (UAX #9)
 [vte]: https://github.com/alacritty/vte
 [portable-pty]: https://github.com/wez/wezterm
 [winit]: https://github.com/rust-windowing/winit
-[softbuffer]: https://github.com/rust-windowing/softbuffer
+[wgpu]: https://github.com/gfx-rs/wgpu

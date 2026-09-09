@@ -4,10 +4,10 @@ use crate::color::Palette;
 use crate::font::Fonts;
 use crate::frame::FramePacer;
 use crate::pty::Pty;
-use crate::render::{Canvas, Renderer};
+use crate::gpu::Gpu;
+use crate::render::Renderer;
 use crate::selection::{selected_text, Selection};
 use crate::term::{BidiMode, Modes, Terminal, Vt};
-use std::num::NonZeroU32;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -68,7 +68,9 @@ impl Default for Config {
 pub struct App {
     cfg: Config,
     window: Option<Arc<Window>>,
-    surface: Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
+    gpu: Option<Gpu>,
+    /// Font generation the GPU glyph atlas was built for.
+    atlas_generation: u64,
     term: Terminal,
     vt: Vt,
     pty: Option<Pty>,
@@ -104,8 +106,8 @@ pub struct App {
 /// Per-phase frame times, reported to stderr every 60 frames.
 struct Profile {
     frames: u32,
-    sum: [std::time::Duration; 4],
-    max: [std::time::Duration; 4],
+    sum: [std::time::Duration; 3],
+    max: [std::time::Duration; 3],
     since: std::time::Instant,
 }
 
@@ -119,7 +121,7 @@ impl Profile {
         }
     }
 
-    fn record(&mut self, phases: [std::time::Duration; 4]) {
+    fn record(&mut self, phases: [std::time::Duration; 3]) {
         self.frames += 1;
         for (i, d) in phases.iter().enumerate() {
             self.sum[i] += *d;
@@ -131,14 +133,13 @@ impl Profile {
             let n = self.frames as f64;
             eprintln!(
                 "frames: {} in {:.0} ms; avg {:.2} ms/frame  \
-                 [scroll {:.2}/{:.2}  buffer {:.2}/{:.2}  draw {:.2}/{:.2}  present {:.2}/{:.2}] (avg/max ms)",
+                 [scroll {:.2}/{:.2}  draw {:.2}/{:.2}  present {:.2}/{:.2}] (avg/max ms)",
                 self.frames,
                 ms(self.since.elapsed()),
                 ms(total) / n,
                 ms(self.sum[0]) / n, ms(self.max[0]),
                 ms(self.sum[1]) / n, ms(self.max[1]),
                 ms(self.sum[2]) / n, ms(self.max[2]),
-                ms(self.sum[3]) / n, ms(self.max[3]),
             );
             *self = Profile::new();
         }
@@ -152,7 +153,8 @@ impl App {
         Ok(App {
             cfg,
             window: None,
-            surface: None,
+            gpu: None,
+            atlas_generation: 0,
             term,
             vt: Vt::new(),
             pty: None,
@@ -451,27 +453,6 @@ impl App {
     }
 }
 
-/// Stop CoreAnimation colour-converting every frame on the CPU.
-///
-/// softbuffer tags its framebuffer as device RGB. A window is composited in
-/// its own colour space, and when the two differ CoreAnimation re-renders the
-/// whole image through CoreGraphics at every commit: 7.5 ms per frame at QHD,
-/// more than drawing the frame took. A terminal wants its colours shown as
-/// they are, so declare the window to be in device RGB and the two agree.
-#[cfg(target_os = "macos")]
-fn match_window_color_space(win: &Window) {
-    use objc2_app_kit::{NSColorSpace, NSView};
-    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    let Ok(handle) = win.window_handle() else { return };
-    let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
-    // SAFETY: winit hands out a valid NSView for the life of the window, and
-    // this runs on the main thread inside the event loop.
-    let view: &NSView = unsafe { h.ns_view.cast::<NSView>().as_ref() };
-    if let Some(window) = view.window() {
-        window.setColorSpace(Some(&NSColorSpace::deviceRGBColorSpace()));
-    }
-}
-
 impl ApplicationHandler<Wake> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -486,15 +467,12 @@ impl ApplicationHandler<Wake> for App {
             ));
         let win = Arc::new(el.create_window(attrs).expect("create window"));
         win.set_ime_allowed(true); // needed for Arabic input methods
-        #[cfg(target_os = "macos")]
-        match_window_color_space(&win);
 
         self.scale = win.scale_factor() as f32;
         self.fonts.set_size(self.cfg.font_size * self.scale);
 
-        let ctx = softbuffer::Context::new(win.clone()).expect("softbuffer context");
-        let surface = softbuffer::Surface::new(&ctx, win.clone()).expect("softbuffer surface");
-        self.surface = Some(surface);
+        self.gpu = Some(Gpu::new(win.clone()).expect("initialise GPU"));
+        self.atlas_generation = self.fonts.generation();
         self.window = Some(win);
 
         let (cw, ch) = self.cell_size();
@@ -803,39 +781,34 @@ impl ApplicationHandler<Wake> for App {
                 let t0 = std::time::Instant::now();
                 self.step_scroll();
                 let t1 = std::time::Instant::now();
-                let (Some(win), Some(surface)) = (&self.window, &mut self.surface) else { return };
+                let (Some(win), Some(gpu)) = (&self.window, &mut self.gpu) else { return };
                 let size = win.inner_size();
-                let (Some(w), Some(h)) =
-                    (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
-                else {
-                    return;
-                };
-                if surface.resize(w, h).is_err() {
+                if size.width == 0 || size.height == 0 {
                     return;
                 }
-                let Ok(mut buffer) = surface.buffer_mut() else { return };
-                let t2 = std::time::Instant::now();
-                let mut canvas = Canvas {
-                    buf: &mut buffer,
-                    width: size.width as usize,
-                    height: size.height as usize,
-                };
+                gpu.resize(size.width, size.height);
+                if self.fonts.generation() != self.atlas_generation {
+                    gpu.clear_glyphs();
+                    self.atlas_generation = self.fonts.generation();
+                }
+                gpu.begin();
                 self.renderer.draw(
-                    &mut canvas,
+                    gpu,
                     &self.term,
                     &mut self.fonts,
                     &self.palette,
                     self.selection,
                     self.focused,
                 );
+                let t2 = std::time::Instant::now();
+                if let Err(e) = gpu.flush(win) {
+                    log::warn!("present failed: {e:#}");
+                }
                 let t3 = std::time::Instant::now();
-                win.pre_present_notify();
-                let _ = buffer.present();
-                let t4 = std::time::Instant::now();
-                self.frames.presented(t4);
+                self.frames.presented(t3);
                 self.needs_redraw = false;
                 if let Some(p) = &mut self.profile {
-                    p.record([t1 - t0, t2 - t1, t3 - t2, t4 - t3]);
+                    p.record([t1 - t0, t2 - t1, t3 - t2]);
                 }
 
                 if win.title() != self.term.title {

@@ -1,25 +1,63 @@
-//! Software rasterisation of the terminal into a softbuffer framebuffer.
+//! Turning the terminal into pixels: layout lookup, then a stream of
+//! rectangles, glyphs and images sent to a [`Target`].
 
 use crate::color::{Color, Palette, Rgb};
-use crate::font::Fonts;
+use crate::font::{Fonts, RasterGlyph};
 use crate::grid::Attrs;
 use crate::layout::{Layouter, RowLayout};
 use crate::selection::Selection;
 use crate::term::Terminal;
 
+/// Somewhere a frame can be drawn: the software [`Canvas`], or the GPU.
+///
+/// Primitives arrive in back-to-front order and must be composited in that
+/// order. Positions are in pixels from the top-left.
+pub trait Target {
+    fn width(&self) -> usize;
+    fn height(&self) -> usize;
+    fn clear(&mut self, c: Rgb);
+    fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgb);
+    /// Draw a rasterised glyph with its top-left at (`ox`, `oy`). `fg` tints
+    /// a coverage mask and is ignored for colour glyphs.
+    fn glyph(&mut self, g: &RasterGlyph, ox: i32, oy: i32, fg: Rgb);
+    /// Draw a straight-alpha RGBA image with its top-left at (`ox`, `oy`).
+    fn image(&mut self, img: &crate::sixel::Image, ox: i32, oy: i32);
+}
+
+/// A software framebuffer of packed 0x00RRGGBB pixels.
 pub struct Canvas<'a> {
     pub buf: &'a mut [u32],
     pub width: usize,
     pub height: usize,
 }
 
-impl<'a> Canvas<'a> {
+impl<'a> Target for Canvas<'a> {
+    fn width(&self) -> usize {
+        self.width
+    }
+
+    fn height(&self) -> usize {
+        self.height
+    }
+
     #[inline]
-    pub fn clear(&mut self, c: Rgb) {
+    fn clear(&mut self, c: Rgb) {
         self.buf.fill(c.pack());
     }
 
-    pub fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgb) {
+    fn glyph(&mut self, g: &RasterGlyph, ox: i32, oy: i32, fg: Rgb) {
+        if g.color {
+            self.blit_color(&g.data, g.width as usize, g.height as usize, ox, oy);
+        } else {
+            self.blit_mask(&g.data, g.width as usize, g.height as usize, ox, oy, fg);
+        }
+    }
+
+    fn image(&mut self, img: &crate::sixel::Image, ox: i32, oy: i32) {
+        self.blit_rgba(&img.rgba, img.width as usize, img.height as usize, ox, oy);
+    }
+
+    fn fill_rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgb) {
         let x0 = x.round().max(0.0) as usize;
         let y0 = y.round().max(0.0) as usize;
         let x1 = ((x + w).round().max(0.0) as usize).min(self.width);
@@ -33,7 +71,9 @@ impl<'a> Canvas<'a> {
             self.buf[base + x0..base + x1].fill(packed);
         }
     }
+}
 
+impl<'a> Canvas<'a> {
     /// Clip a `gw`×`gh` bitmap placed at (`ox`, `oy`) to the canvas.
     ///
     /// Returns the source column range, the destination x range, and the
@@ -274,9 +314,9 @@ impl Renderer {
         }
     }
 
-    pub fn draw(
+    pub fn draw<T: Target>(
         &mut self,
-        canvas: &mut Canvas,
+        canvas: &mut T,
         term: &Terminal,
         fonts: &mut Fonts,
         palette: &Palette,
@@ -430,18 +470,7 @@ impl Renderer {
                 let Some(raster) = fonts.rasterize(g.font, g.glyph, g.px, gx) else { continue };
                 let ox = gx.floor() as i32 + raster.left;
                 let oy = gy.floor() as i32 - raster.top;
-                if raster.color {
-                    canvas.blit_color(&raster.data, raster.width as usize, raster.height as usize, ox, oy);
-                } else {
-                    canvas.blit_mask(
-                        &raster.data,
-                        raster.width as usize,
-                        raster.height as usize,
-                        ox,
-                        oy,
-                        fg,
-                    );
-                }
+                canvas.glyph(raster, ox, oy, fg);
             }
 
             // --- underline / strikeout, drawn per visual column so they run
@@ -483,16 +512,10 @@ impl Renderer {
             }
             let y = self.pad_y + (rel as f32 + frac) * cell_h;
             let x = self.pad_x + placed.col as f32 * cell_w;
-            if y > canvas.height as f32 {
+            if y > canvas.height() as f32 {
                 continue;
             }
-            canvas.blit_rgba(
-                &placed.image.rgba,
-                placed.image.width as usize,
-                placed.image.height as usize,
-                x.round() as i32,
-                y.round() as i32,
-            );
+            canvas.image(&placed.image, x.round() as i32, y.round() as i32);
         }
 
         // --- scrollbar, shown while scrolled back and faded out when idle ---
@@ -508,7 +531,7 @@ impl Renderer {
                 let t = 1.0 - (scrolled / max_scroll.max(1.0)).clamp(0.0, 1.0);
                 let y = self.pad_y + t * (track_h - thumb_h);
                 let w = 4.0;
-                let x = canvas.width as f32 - w - 2.0;
+                let x = canvas.width() as f32 - w - 2.0;
                 let a = self.scrollbar_alpha.clamp(0.0, 1.0);
                 let fg = palette.selection_bg;
                 let blend = |c: u8, d: u8| ((c as f32 * a) + (d as f32 * (1.0 - a))) as u8;
@@ -546,14 +569,7 @@ impl Renderer {
                             let ox = gx.floor() as i32 + raster.left;
                             let oy = gy.floor() as i32 - raster.top;
                             if !raster.color {
-                                canvas.blit_mask(
-                                    &raster.data,
-                                    raster.width as usize,
-                                    raster.height as usize,
-                                    ox,
-                                    oy,
-                                    def_bg,
-                                );
+                                canvas.glyph(raster, ox, oy, def_bg);
                             }
                         }
                     }

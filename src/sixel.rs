@@ -6,9 +6,19 @@
 
 /// A decoded image: tightly packed RGBA, top-left origin.
 pub struct Image {
+    /// Unique for the life of the process, so a GPU texture cache can key on it.
+    pub id: u64,
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+}
+
+impl Image {
+    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Image {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Image { id, width, height, rgba }
+    }
 }
 
 /// Upper bounds, so a malformed or hostile stream cannot exhaust memory.
@@ -231,5 +241,5 @@ pub fn decode(data: &[u8]) -> Option<Image> {
             rgba.extend_from_slice(&pixels[base + col as usize]);
         }
     }
-    Some(Image { width, height, rgba })
+    Some(Image::new(width, height, rgba))
 }
