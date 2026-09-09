@@ -31,3 +31,11 @@ png = "0.18"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+# The software renderer and text shaper run on every interactive frame. Keep
+# `cargo run` responsive too, while retaining debug symbols and assertions.
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 3

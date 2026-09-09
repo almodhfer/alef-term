@@ -2,7 +2,8 @@
 
 use crate::color::Palette;
 use crate::font::Fonts;
-use crate::pty::{Pty, PtyEvent};
+use crate::frame::FramePacer;
+use crate::pty::Pty;
 use crate::render::{Canvas, Renderer};
 use crate::selection::{selected_text, Selection};
 use crate::term::{BidiMode, Modes, Terminal, Vt};
@@ -11,7 +12,7 @@ use std::sync::Arc;
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
@@ -93,6 +94,9 @@ pub struct App {
     wheel_remainder: f32,
     last_frame: Option<std::time::Instant>,
     scrollbar_fade: f32,
+    frames: FramePacer,
+    pty_pending: bool,
+    refresh_millihertz: Option<u32>,
 }
 
 impl App {
@@ -124,6 +128,9 @@ impl App {
             wheel_remainder: 0.0,
             last_frame: None,
             scrollbar_fade: 0.0,
+            frames: FramePacer::default(),
+            pty_pending: false,
+            refresh_millihertz: None,
         })
     }
 
@@ -134,6 +141,7 @@ impl App {
     /// Recompute the grid from the window size and tell the child about it.
     fn reflow(&mut self) {
         let Some(win) = &self.window else { return };
+        self.refresh_millihertz = win.current_monitor().and_then(|m| m.refresh_rate_millihertz());
         let size = win.inner_size();
         let (cw, ch) = self.cell_size();
         let (px, py) = (self.renderer.pad_x, self.renderer.pad_y);
@@ -152,25 +160,11 @@ impl App {
 
     fn drain_pty(&mut self) {
         let Some(pty) = &self.pty else { return };
-        // Coalesce everything queued into one parse pass; under a flood this
-        // keeps the event loop responsive instead of redrawing per chunk.
-        let mut batch: Vec<u8> = Vec::new();
-        let mut exited = false;
-        while let Ok(ev) = pty.rx.try_recv() {
-            match ev {
-                PtyEvent::Output(mut b) => {
-                    batch.append(&mut b);
-                    if batch.len() > 4 << 20 {
-                        break;
-                    }
-                }
-                PtyEvent::Exited => exited = true,
-            }
-        }
-        if !batch.is_empty() {
-            let was_at_bottom = self.scroll.at_bottom();
-            let retired_before = self.term.grid.scrolled;
-            self.vt.feed(&mut self.term, &batch);
+        let was_at_bottom = self.scroll.at_bottom();
+        let retired_before = self.term.grid.scrolled;
+        let result = pty.drain(|bytes| self.vt.feed(&mut self.term, bytes));
+        self.pty_pending = result.yielded;
+        if result.bytes > 0 {
             let retired = (self.term.grid.scrolled - retired_before) as f32;
 
             if was_at_bottom {
@@ -207,7 +201,7 @@ impl App {
             self.term.damaged = false;
             self.needs_redraw = true;
         }
-        if exited {
+        if result.exited {
             self.exited = true;
         }
     }
@@ -255,9 +249,6 @@ impl App {
     fn scroll_wheel(&mut self, lines: f32) {
         self.scroll.nudge(lines);
         self.needs_redraw = true;
-        if let Some(w) = &self.window {
-            w.request_redraw();
-        }
     }
 
     /// How far back the view may go. The alternate screen keeps no history of
@@ -462,17 +453,9 @@ impl ApplicationHandler<Wake> for App {
         self.reflow();
     }
 
-    fn user_event(&mut self, el: &ActiveEventLoop, _: Wake) {
-        self.drain_pty();
-        if self.exited {
-            el.exit();
-            return;
-        }
-        if self.needs_redraw {
-            if let Some(w) = &self.window {
-                w.request_redraw();
-            }
-        }
+    fn user_event(&mut self, _el: &ActiveEventLoop, _: Wake) {
+        // Output is drained once in about_to_wait, after input events have
+        // been delivered. A wake must not itself start another parse/redraw.
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -496,6 +479,11 @@ impl ApplicationHandler<Wake> for App {
                 self.reflow();
             }
             WindowEvent::Resized(_) => self.reflow(),
+            WindowEvent::Moved(_) => {
+                self.refresh_millihertz = self.window.as_ref()
+                    .and_then(|w| w.current_monitor())
+                    .and_then(|m| m.refresh_rate_millihertz());
+            }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
                 self.send(s.as_bytes());
@@ -547,9 +535,6 @@ impl ApplicationHandler<Wake> for App {
                                     BidiMode::Auto => BidiMode::ForceLtr,
                                 };
                                 self.needs_redraw = true;
-                                if let Some(w) = &self.window {
-                                    w.request_redraw();
-                                }
                                 return;
                             }
                             _ => {}
@@ -581,9 +566,6 @@ impl ApplicationHandler<Wake> for App {
                         _ => false,
                     };
                     if handled {
-                        if let Some(w) = &self.window {
-                            w.request_redraw();
-                        }
                         return;
                     }
                 }
@@ -748,7 +730,6 @@ impl ApplicationHandler<Wake> for App {
                 self.scroll_wheel(lines);
             }
             WindowEvent::RedrawRequested => {
-                self.drain_pty();
                 self.step_scroll();
                 let (Some(win), Some(surface)) = (&self.window, &mut self.surface) else { return };
                 let size = win.inner_size();
@@ -774,7 +755,9 @@ impl ApplicationHandler<Wake> for App {
                     self.selection,
                     self.focused,
                 );
+                win.pre_present_notify();
                 let _ = buffer.present();
+                self.frames.presented(std::time::Instant::now());
                 self.needs_redraw = false;
 
                 if win.title() != self.term.title {
@@ -797,10 +780,28 @@ impl ApplicationHandler<Wake> for App {
         let animating = !settled
             || (self.scroll.target - self.scroll.pos).abs() > 0.01
             || self.renderer.scrollbar_alpha > 0.01 && self.scroll.at_bottom();
+        let now = std::time::Instant::now();
+        let mut deadline = None;
         if self.needs_redraw || animating {
             if let Some(w) = &self.window {
-                w.request_redraw();
+                let due = self.frames.deadline(now, self.refresh_millihertz);
+                if due <= now {
+                    w.request_redraw();
+                } else {
+                    deadline = Some(due);
+                }
             }
         }
+        if self.pty_pending {
+            // The reader may already have queued all output and gone idle.
+            // Explicitly continue after a budget yield, without depending on
+            // another read to wake us or spinning before input is dispatched.
+            let resume = now + std::time::Duration::from_millis(1);
+            deadline = Some(deadline.map_or(resume, |d| d.min(resume)));
+        }
+        el.set_control_flow(match deadline {
+            Some(due) => ControlFlow::WaitUntil(due),
+            None => ControlFlow::Wait,
+        });
     }
 }

@@ -97,6 +97,10 @@ cargo build --release
 ./target/release/arabic-term
 ```
 
+Or build and launch in one step with `cargo run --release`. Plain `cargo run`
+selects the development build even after `cargo build --release`; the development
+profile also enables optimization so scrolling and text shaping remain responsive.
+
 Requires Rust 1.85+ and macOS. Fonts are picked in this order:
 
 | Slot | Preferred | Falls back to |
@@ -159,7 +163,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-126 tests, covering: VT and grid behaviour; font coverage and fallback; the
+136 tests, covering: VT and grid behaviour; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics
@@ -188,6 +192,14 @@ the bottom when it was already there or when you type.
 Scrolling is smooth at sub-line precision, with wheel events coalesced so a
 burst of trackpad ticks costs one redraw rather than one each, and the easing is
 framerate-independent.
+
+Redraws are paced to the monitor's refresh rate, with immediate updates after
+idle. PTY wakes are coalesced and queued output is bounded to 1 MiB. Each event-loop
+turn parses at most 128 KiB or about 2 ms of output (checked between 16 KiB chunks),
+then yields to input before continuing, so a busy full-screen program cannot
+monopolize the UI with a multi-megabyte parse pass.
+Input writes run on a separate thread so a child that stops reading cannot
+freeze mouse and keyboard handling.
 
 It deliberately does **not** do damage tracking. That was measured rather than
 assumed: partial redraw needs a persistent shadow framebuffer, and at Retina
