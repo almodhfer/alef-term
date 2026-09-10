@@ -6,7 +6,7 @@
 //! reported rather than silently ignored.
 
 use crate::app::Config;
-use crate::color::{Palette, Rgb};
+use crate::color::{find_theme, Overrides, Rgb, THEMES};
 use crate::term::CursorShape;
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -35,7 +35,8 @@ pub struct File {
     pub cursor_shape: Option<String>,
     pub cursor_blink: Option<bool>,
     pub visual_bell: Option<bool>,
-    /// "dark" or "light"; the base the colours below adjust.
+    /// A built-in theme, by name (`arabic-term --list-themes`); the base the
+    /// colours below adjust.
     pub theme: Option<String>,
     /// "gpu" (the default) or "software".
     pub renderer: Option<String>,
@@ -90,11 +91,63 @@ pub fn parse_hex(s: &str) -> Option<Rgb> {
     Some(Rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
 }
 
-fn color(name: &str, s: &Option<String>, into: &mut Rgb) -> Result<()> {
-    if let Some(s) = s {
-        *into = parse_hex(s).ok_or_else(|| anyhow!("colors.{name}: expected #rrggbb, got {s:?}"))?;
+fn color(name: &str, s: &Option<String>) -> Result<Option<Rgb>> {
+    s.as_ref()
+        .map(|s| parse_hex(s).ok_or_else(|| anyhow!("colors.{name}: expected #rrggbb, got {s:?}")))
+        .transpose()
+}
+
+/// Record `theme` as the configured theme and change nothing else in the
+/// file. A file that does not parse is left alone rather than clobbered; one
+/// that does not exist is created.
+pub fn save_theme(path: &Path, theme: &str) -> Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
+    parse(&text).with_context(|| format!("{} has an error; not saving the theme", path.display()))?;
+    let updated = set_theme_line(&text, theme);
+    parse(&updated).context("the updated configuration does not parse")?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     }
-    Ok(())
+    std::fs::write(path, updated).with_context(|| format!("writing {}", path.display()))
+}
+
+/// `text` with its top-level `theme` key set to `theme`: the existing line is
+/// rewritten in place, keeping any comment after it, or a new one goes above
+/// the first table.
+pub fn set_theme_line(text: &str, theme: &str) -> String {
+    let line = format!("theme = \"{theme}\"");
+    let mut out: Vec<String> = Vec::new();
+    let mut done = false;
+    for l in text.lines() {
+        let t = l.trim_start();
+        let is_theme = t.strip_prefix("theme").is_some_and(|rest| rest.trim_start().starts_with('='));
+        if !done && is_theme {
+            // Theme names hold no `#`, so the first one starts the comment.
+            out.push(match l.find('#') {
+                Some(at) => format!("{line:<width$}{}", &l[at..], width = at.max(line.len() + 1)),
+                None => line.clone(),
+            });
+            done = true;
+            continue;
+        }
+        if !done && t.starts_with('[') {
+            // Top-level keys must come before any table.
+            out.push(line.clone());
+            out.push(String::new());
+            done = true;
+        }
+        out.push(l.to_string());
+    }
+    if !done {
+        out.push(line);
+    }
+    let mut s = out.join("\n");
+    s.push('\n');
+    s
 }
 
 impl File {
@@ -155,28 +208,30 @@ impl File {
             };
         }
         if let Some(t) = &self.theme {
-            cfg.palette = match t.as_str() {
-                "dark" => Palette::dark(),
-                "light" => Palette::light(),
-                other => return Err(anyhow!("theme: expected dark or light, got {other:?}")),
-            };
+            cfg.theme = find_theme(t).ok_or_else(|| {
+                let names: Vec<&str> = THEMES.iter().map(|t| t.name).collect();
+                anyhow!("theme: no theme called {t:?}; the built-in ones are {}", names.join(", "))
+            })?;
         }
         let c = &self.colors;
-        color("foreground", &c.foreground, &mut cfg.palette.fg)?;
-        color("background", &c.background, &mut cfg.palette.bg)?;
-        color("cursor", &c.cursor, &mut cfg.palette.cursor)?;
-        color("selection_background", &c.selection_background, &mut cfg.palette.selection_bg)?;
-        if let Some(s) = &c.selection_foreground {
-            cfg.palette.selection_fg =
-                Some(parse_hex(s).ok_or_else(|| anyhow!("colors.selection_foreground: expected #rrggbb, got {s:?}"))?);
-        }
         if c.ansi.len() > 16 {
             return Err(anyhow!("colors.ansi: at most 16 entries, got {}", c.ansi.len()));
         }
-        for (i, s) in c.ansi.iter().enumerate() {
-            cfg.palette.colors[i] =
-                parse_hex(s).ok_or_else(|| anyhow!("colors.ansi[{i}]: expected #rrggbb, got {s:?}"))?;
-        }
+        let ansi = c
+            .ansi
+            .iter()
+            .enumerate()
+            .map(|(i, s)| parse_hex(s).ok_or_else(|| anyhow!("colors.ansi[{i}]: expected #rrggbb, got {s:?}")))
+            .collect::<Result<Vec<_>>>()?;
+        cfg.colors = Overrides {
+            fg: color("foreground", &c.foreground)?,
+            bg: color("background", &c.background)?,
+            cursor: color("cursor", &c.cursor)?,
+            selection_bg: color("selection_background", &c.selection_background)?,
+            selection_fg: color("selection_foreground", &c.selection_foreground)?,
+            ansi,
+        };
+        cfg.set_theme(cfg.theme);
         Ok(())
     }
 }

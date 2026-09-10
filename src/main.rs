@@ -1,4 +1,5 @@
 use arabic_term::app;
+use arabic_term::color::{find_theme, THEMES};
 
 use winit::event_loop::{ControlFlow, EventLoop};
 
@@ -19,6 +20,7 @@ fn main() -> anyhow::Result<()> {
             Err(e) => eprintln!("arabic-term: config: {e:#}; continuing with defaults"),
         }
     }
+    cfg.config_path = config_path;
     let mut args = argv.into_iter();
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -44,6 +46,16 @@ fn main() -> anyhow::Result<()> {
                 }
             }
             "--no-alternate-scroll" => cfg.alternate_scroll = false,
+            "--theme" => match args.next().as_deref().and_then(find_theme) {
+                Some(t) => cfg.set_theme(t),
+                None => eprintln!("arabic-term: no such theme; --list-themes shows them"),
+            },
+            "--list-themes" => {
+                for t in THEMES {
+                    println!("{:<18} {}", t.name, t.title);
+                }
+                return Ok(());
+            }
             "--size" => {
                 if let Some((c, r)) = args.next().and_then(|v| {
                     let (c, r) = v.split_once('x')?;
@@ -70,11 +82,14 @@ fn main() -> anyhow::Result<()> {
                        --touch-scroll <f>     trackpad scroll speed (default 3)\n  \
                        --no-alternate-scroll  do not turn the wheel into arrow\n  \
                        \u{20}                      keys for full-screen programs\n  \
+                       --theme <name>         colour theme (default dark)\n  \
+                       --list-themes          print the built-in themes\n  \
                        --config <path>        configuration file (default:\n  \
                        \u{20}                      ~/.config/arabic-term/config.toml)\n\n\
                      Keys:\n  \
                        Cmd +/-/0    font size\n  \
                        Cmd R        cycle bidi base direction (auto/LTR/RTL)\n  \
+                       Cmd Shift T  choose a theme\n  \
                        Cmd C/V      copy / paste"
                 );
                 return Ok(());

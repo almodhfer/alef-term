@@ -4,7 +4,9 @@ use crate::font::Fonts;
 use crate::frame::FramePacer;
 use crate::pty::Pty;
 use crate::gpu::Gpu;
-use crate::render::{Canvas, DrawOpts, Renderer, SearchBar};
+use crate::color::{find_theme, Theme};
+use crate::picker::ThemePicker;
+use crate::render::{Canvas, DrawOpts, PickerView, Renderer, SearchBar};
 use crate::search::{Index, Search};
 use crate::selection::{logical_line, selected_text, url_at, word_at, Selection, Span};
 use crate::term::{BidiMode, CursorShape, Modes, Terminal, Vt};
@@ -59,6 +61,13 @@ pub struct Config {
     /// Flash the window edge on BEL.
     pub visual_bell: bool,
     pub palette: crate::color::Palette,
+    /// The theme the palette comes from, and the configuration file's colours
+    /// laid over it.
+    pub theme: &'static Theme,
+    pub colors: crate::color::Overrides,
+    /// The configuration file, where a theme chosen in the picker is
+    /// remembered. `None` keeps the choice for this run only.
+    pub config_path: Option<std::path::PathBuf>,
     /// Draw on the CPU even when a GPU is available.
     pub software: bool,
 }
@@ -87,8 +96,25 @@ impl Default for Config {
             cursor_blink: false,
             visual_bell: true,
             palette: crate::color::Palette::dark(),
+            theme: crate::color::default_theme(),
+            colors: Default::default(),
+            config_path: None,
             software: std::env::var_os("ARABIC_TERM_SOFTWARE").is_some(),
         }
+    }
+}
+
+impl Config {
+    /// `t`'s colours with the configuration file's overrides on top.
+    pub fn palette_for(&self, t: &Theme) -> crate::color::Palette {
+        let mut p = crate::color::Palette::from_theme(t);
+        self.colors.apply(&mut p);
+        p
+    }
+
+    pub fn set_theme(&mut self, t: &'static Theme) {
+        self.theme = t;
+        self.palette = self.palette_for(t);
     }
 }
 
@@ -98,6 +124,8 @@ enum Request {
     NewWindow,
     Close,
     Quit,
+    /// Switch every window to the named theme, and remember it.
+    SetTheme(&'static str),
 }
 
 /// One window: its terminal, shell, fonts and everything drawn in it.
@@ -132,6 +160,8 @@ pub struct Pane {
     /// The search bar, while open, and the index behind it.
     search: Option<Search>,
     search_index: Index,
+    /// The theme picker, while open.
+    picker: Option<ThemePicker>,
     /// Bumped whenever the terminal's content changes, so the search index
     /// knows when it is stale.
     epoch: u64,
@@ -258,6 +288,7 @@ impl Pane {
             hover_link: None,
             search: None,
             search_index: Index::default(),
+            picker: None,
             epoch: 0,
             clipboard: arboard::Clipboard::new().ok(),
             needs_redraw: true,
@@ -320,8 +351,81 @@ impl Pane {
         true
     }
 
+    /// Open the theme picker on the theme in use.
+    fn picker_open(&mut self) {
+        self.search = None;
+        self.picker = Some(ThemePicker::new(self.cfg.theme));
+        self.needs_redraw = true;
+    }
+
+    /// Show the highlighted theme in this window without committing to it.
+    fn picker_preview(&mut self) {
+        let Some(t) = self.picker.as_ref().and_then(|p| p.current()) else { return };
+        self.term.set_palette(self.cfg.palette_for(t));
+        self.needs_redraw = true;
+    }
+
+    /// Close the picker, back on the theme in use before it opened.
+    fn picker_cancel(&mut self) {
+        if self.picker.take().is_some() {
+            self.term.set_palette(self.cfg.palette.clone());
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Keys while the picker is open. Returns true when consumed.
+    fn picker_key(&mut self, key: &Key, text: Option<&str>) -> bool {
+        let Some(picker) = &mut self.picker else { return false };
+        let sup = self.modifiers.super_key();
+        let shift = self.modifiers.shift_key();
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.picker_cancel();
+                return true;
+            }
+            Key::Named(NamedKey::Enter) => {
+                // With nothing matching, the picker stays open.
+                if let Some(t) = picker.current() {
+                    self.picker = None;
+                    self.request = Some(Request::SetTheme(t.name));
+                    self.needs_redraw = true;
+                }
+                return true;
+            }
+            Key::Named(NamedKey::ArrowUp) => picker.step(-1),
+            Key::Named(NamedKey::ArrowDown) => picker.step(1),
+            Key::Named(NamedKey::Tab) => picker.step(if shift { -1 } else { 1 }),
+            Key::Named(NamedKey::Backspace) => picker.pop(sup),
+            // The key that opened it closes it.
+            Key::Character(c) if sup && c.eq_ignore_ascii_case("t") => {
+                self.picker_cancel();
+                return true;
+            }
+            _ if sup => return false,
+            _ => {
+                let Some(t) = text else { return true };
+                let t: String = t.chars().filter(|c| !c.is_control()).collect();
+                if t.is_empty() {
+                    return true;
+                }
+                picker.push(&t);
+            }
+        }
+        self.picker_preview();
+        true
+    }
+
+    /// Switch to `t` for good: this window's colours, and what it restores
+    /// when a program resets them.
+    fn apply_theme(&mut self, t: &'static Theme) {
+        self.cfg.set_theme(t);
+        self.term.set_palette(self.cfg.palette.clone());
+        self.needs_redraw = true;
+    }
+
     /// Open the search bar, seeded with a one-line selection if there is one.
     fn search_open(&mut self) {
+        self.picker_cancel();
         let seed = self
             .selection
             .map(|s| selected_text(&self.term, s))
@@ -823,7 +927,10 @@ impl Pane {
                 self.update_hover();
             }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
-                if let Some(search) = &mut self.search {
+                if let Some(picker) = &mut self.picker {
+                    picker.push(&s);
+                    self.picker_preview();
+                } else if let Some(search) = &mut self.search {
                     search.query.push_str(&s);
                     self.search_run(true);
                 } else {
@@ -835,6 +942,9 @@ impl Pane {
                     return;
                 }
                 self.blink_reset();
+                if self.picker.is_some() && self.picker_key(&event.logical_key, event.text.as_deref()) {
+                    return;
+                }
                 if self.search.is_some() && self.search_key(&event.logical_key, event.text.as_deref()) {
                     return;
                 }
@@ -845,6 +955,10 @@ impl Pane {
                         match c.as_str() {
                             "f" => {
                                 self.search_open();
+                                return;
+                            }
+                            "t" | "T" if self.modifiers.shift_key() => {
+                                self.picker_open();
                                 return;
                             }
                             "n" => {
@@ -1150,6 +1264,12 @@ impl Pane {
                     total: s.matches.len(),
                     current: s.current,
                 });
+                let picker_themes = self.picker.as_ref().map(|p| p.matches()).unwrap_or_default();
+                let picker = self.picker.as_ref().map(|p| PickerView {
+                    query: &p.query,
+                    themes: &picker_themes,
+                    selected: p.selected,
+                });
                 let opts = DrawOpts {
                     selection: self.selection,
                     focused: self.focused,
@@ -1160,6 +1280,7 @@ impl Pane {
                     highlights: self.search.as_ref().map_or(&[], |s| s.spans.as_slice()),
                     current: self.search.as_ref().map_or(&[], |s| s.current_spans()),
                     search: bar,
+                    picker,
                 };
                 let t2;
                 match output {
@@ -1330,6 +1451,19 @@ impl ApplicationHandler<Wake> for App {
                 }
             }
             Some(Request::Quit) => el.exit(),
+            Some(Request::SetTheme(name)) => {
+                let Some(t) = find_theme(name) else { return };
+                // New windows start with it too.
+                self.cfg.set_theme(t);
+                for pane in &mut self.panes {
+                    pane.apply_theme(t);
+                }
+                if let Some(path) = &self.cfg.config_path {
+                    if let Err(e) = crate::config::save_theme(path, t.name) {
+                        eprintln!("arabic-term: could not save the theme: {e:#}");
+                    }
+                }
+            }
             None => {}
         }
     }

@@ -1,7 +1,7 @@
 //! Turning the terminal into pixels: layout lookup, then a stream of
 //! rectangles, glyphs and images sent to a [`Target`].
 
-use crate::color::{Color, Palette, Rgb};
+use crate::color::{Color, Palette, Rgb, Theme};
 use crate::font::{Fonts, RasterGlyph};
 use crate::grid::Attrs;
 use crate::layout::{Layouter, RowLayout};
@@ -15,6 +15,15 @@ pub struct SearchBar<'a> {
     pub total: usize,
     /// Zero-based index of the current hit.
     pub current: Option<usize>,
+}
+
+/// The theme picker's contents.
+#[derive(Clone, Copy, Debug)]
+pub struct PickerView<'a> {
+    pub query: &'a str,
+    /// The themes that match the query, and which of them is highlighted.
+    pub themes: &'a [&'static Theme],
+    pub selected: usize,
 }
 
 /// Everything about a frame that is not terminal content.
@@ -36,6 +45,7 @@ pub struct DrawOpts<'a> {
     pub highlights: &'a [Span],
     pub current: &'a [Span],
     pub search: Option<SearchBar<'a>>,
+    pub picker: Option<PickerView<'a>>,
 }
 
 impl Default for DrawOpts<'_> {
@@ -50,6 +60,7 @@ impl Default for DrawOpts<'_> {
             highlights: &[],
             current: &[],
             search: None,
+            picker: None,
         }
     }
 }
@@ -611,6 +622,11 @@ impl Renderer {
             self.draw_text(canvas, fonts, &count_cells, x0 + w - pad - cw_, ty, palette.colors[8], palette.bg, term);
         }
 
+        // --- theme picker, centred over everything ---
+        if let Some(p) = &opts.picker {
+            self.draw_picker(canvas, fonts, term, p);
+        }
+
         // --- bell: a brief flash of the window edge ---
         if opts.bell > 0.01 {
             let a = opts.bell.clamp(0.0, 1.0);
@@ -628,7 +644,8 @@ impl Renderer {
         // --- cursor, mapped through the row's logical->visual column map ---
         let cursor_shown = term.modes.contains(crate::term::Modes::CURSOR_VISIBLE)
             && term.grid.view_offset == 0
-            && (opts.cursor_on || !opts.focused);
+            && (opts.cursor_on || !opts.focused)
+            && opts.picker.is_none();
         if cursor_shown {
             let cur = term.grid.screen.cursor;
             if cur.row < rows {
@@ -688,7 +705,82 @@ impl Renderer {
     }
 }
 
+/// The picker's key hint.
+const PICKER_HINT: &str = "↑↓ choose · Enter apply · Esc cancel";
+
 impl Renderer {
+    /// The theme picker: a query line, the matching themes each painted in
+    /// its own colours with a swatch of its accents, and a key hint.
+    fn draw_picker<T: Target>(&mut self, canvas: &mut T, fonts: &mut Fonts, term: &Terminal, p: &PickerView) {
+        const SWATCHES: usize = 6;
+        let palette = &term.palette;
+        let (cell_w, cell_h) = (fonts.cell_w, fonts.cell_h);
+        let pad = 8.0;
+        let row_h = (cell_h + 6.0).round();
+        let (cw, ch) = (canvas.width() as f32, canvas.height() as f32);
+        // Secondary text, halfway to the background: some themes' bright
+        // black is too faint to read as text.
+        let half = |a: u8, b: u8| ((a as u16 + b as u16) / 2) as u8;
+        let dim = Rgb(half(palette.fg.0, palette.bg.0), half(palette.fg.1, palette.bg.1), half(palette.fg.2, palette.bg.2));
+
+        let title_cols = p.themes.iter().map(|t| t.title.chars().count()).max().unwrap_or(0).max(16);
+        let inner_cols = (1 + title_cols + 2 + SWATCHES + 1).max(PICKER_HINT.chars().count() + 1);
+        let w = (inner_cols as f32 * cell_w + pad * 2.0).min(cw - 16.0).max(cell_w * 4.0);
+        // As many rows as the window has room for beside the query and hint.
+        let chrome = pad * 4.0 + cell_h * 2.0;
+        let room = ((ch - 32.0 - chrome) / row_h).floor().max(1.0) as usize;
+        let shown = p.themes.len().min(room);
+        let h = chrome + shown.max(1) as f32 * row_h;
+        let x0 = ((cw - w) / 2.0).max(0.0).round();
+        let y0 = ((ch - h) / 2.0).max(0.0).round();
+        canvas.fill_rect(x0 - 1.0, y0 - 1.0, w + 2.0, h + 2.0, palette.cursor);
+        canvas.fill_rect(x0, y0, w, h, palette.bg);
+
+        // The query, after a label, with the caret where typing goes.
+        let mut y = y0 + pad;
+        let label = cells_of("Theme: ");
+        self.draw_text(canvas, fonts, &label, x0 + pad, y, dim, palette.bg, term);
+        let qx = x0 + pad + label.cells.len() as f32 * cell_w;
+        let query = cells_of(p.query);
+        self.draw_text(canvas, fonts, &query, qx, y, palette.fg, palette.bg, term);
+        canvas.fill_rect(qx + query.cells.len() as f32 * cell_w, y, 2.0, cell_h, palette.cursor);
+        y += cell_h + pad;
+
+        let (rx, rw) = (x0 + pad, w - pad * 2.0);
+        let text_dy = ((row_h - cell_h) / 2.0).floor();
+        if p.themes.is_empty() {
+            let none = cells_of("no theme matches");
+            self.draw_text(canvas, fonts, &none, rx + cell_w, y + text_dy, dim, palette.bg, term);
+        }
+        // A window onto the list that keeps the highlight in view.
+        let first = p.selected.saturating_sub(shown / 2).min(p.themes.len() - shown);
+        for (i, t) in p.themes.iter().enumerate().skip(first).take(shown) {
+            let ry = y + (i - first) as f32 * row_h;
+            canvas.fill_rect(rx, ry + 1.0, rw, row_h - 2.0, t.bg);
+            let name = cells_of(t.title);
+            self.draw_text(canvas, fonts, &name, rx + cell_w, ry + text_dy, t.fg, t.bg, term);
+            // Red through cyan: what the theme does to `ls` and a prompt.
+            let sh = (cell_h * 0.5).round();
+            let sx = rx + rw - (SWATCHES + 1) as f32 * cell_w;
+            for (k, c) in t.ansi[1..=SWATCHES].iter().enumerate() {
+                canvas.fill_rect(sx + k as f32 * cell_w + 1.0, ry + (row_h - sh) / 2.0, cell_w - 2.0, sh, *c);
+            }
+        }
+        if p.selected >= first && p.selected < first + shown {
+            // A ring round the highlighted row, in the colours on show.
+            let ry = y + (p.selected - first) as f32 * row_h;
+            let c = palette.cursor;
+            canvas.fill_rect(rx - 2.0, ry - 1.0, rw + 4.0, 2.0, c);
+            canvas.fill_rect(rx - 2.0, ry + row_h - 1.0, rw + 4.0, 2.0, c);
+            canvas.fill_rect(rx - 2.0, ry - 1.0, 2.0, row_h + 2.0, c);
+            canvas.fill_rect(rx + rw, ry - 1.0, 2.0, row_h + 2.0, c);
+        }
+
+        let hy = y + shown.max(1) as f32 * row_h + pad;
+        let hint = cells_of(PICKER_HINT);
+        self.draw_text(canvas, fonts, &hint, x0 + pad, hy, dim, palette.bg, term);
+    }
+
     /// Draw one row of the terminal's own text at (`x`, `y`), the row's
     /// top-left. Returns whether it laid out right-to-left, which is where
     /// its caret belongs. `bg` is where the row is drawn, for colour glyphs.

@@ -17,10 +17,11 @@ cursor_shape = "block"      # block | underline | bar
 cursor_blink = false
 visual_bell = true
 
-theme = "dark"              # dark | light
+theme = "dark"              # see `arabic-term --list-themes`, or press Cmd Shift T
 renderer = "gpu"            # gpu | software (the fallback when there is no GPU)
 
 [colors]
+# Applied on top of whichever theme is in use.
 # foreground = "#d4d9e0"
 # background = "#14161b"
 # cursor = "#62a0ea"

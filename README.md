@@ -123,6 +123,8 @@ render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 --scroll-lines <n>      lines per wheel notch (default 3)
 --touch-scroll <f>      trackpad scroll speed (default 3)
 --no-alternate-scroll   do not turn the wheel into arrow keys
+--theme <name>          colour theme (default dark)
+--list-themes           print the built-in themes
 ```
 
 Set `ARABIC_TERM_PROFILE=1` to print per-phase frame times to stderr.
@@ -133,14 +135,29 @@ Settings live in `~/.config/arabic-term/config.toml` (or the file named by
 `$ARABIC_TERM_CONFIG` or `--config`). Every key is optional and flags override
 the file; a typo is reported on startup rather than ignored. See
 [`docs/config.example.toml`](docs/config.example.toml) for the full list: fonts,
-size, scrollback, scroll speed, cursor shape and blink, the visual bell, a
-`dark` or `light` theme, and `#rrggbb` overrides for the foreground,
-background, cursor, selection and the 16 ANSI colours.
+size, scrollback, scroll speed, cursor shape and blink, the visual bell, the
+theme, and `#rrggbb` overrides for the foreground, background, cursor,
+selection and the 16 ANSI colours.
+
+### Themes
+
+Eighteen themes are built in: the default `dark` and `light`, Dracula, Nord,
+Gruvbox (dark and light), Solarized (dark and light), Tokyo Night, Catppuccin
+(Mocha and Latte), One Dark, Monokai, GitHub (dark and light), Rosé Pine,
+Kanagawa and Everforest. `arabic-term --list-themes` prints their names.
+
+Press `Cmd Shift T` to pick one from inside the terminal. The list is filtered
+as you type, the window previews the theme under the highlight, `Enter` keeps
+it and `Esc` goes back. The choice applies to every open window and is saved as
+the `theme` line of the configuration file; nothing else in the file is
+touched, and a file with an error in it is left alone. `[colors]` overrides
+apply on top of whichever theme is chosen.
 
 | Key | Action |
 | --- | --- |
 | `Cmd` `+` / `-` / `0` | font size |
 | `Cmd R` | cycle base direction: LTR → RTL → auto |
+| `Cmd Shift T` | choose a theme, previewed live; type to filter, `Enter` keeps it, `Esc` cancels |
 | `Cmd N` / `Cmd W` / `Cmd Q` | new window (in the shell's directory, when it reports it with OSC 7) / close window / quit |
 | `Cmd C` / `Cmd V` | copy / paste |
 | `Cmd F` | search the scrollback; `Enter` / `Shift Enter` (or the arrows) step to older / newer hits, `Cmd G` likewise, `Esc` closes |
@@ -193,7 +210,8 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-186 tests, covering: VT and grid behaviour; font coverage and fallback; the
+196 tests, covering: VT and grid behaviour; the built-in themes, the theme
+picker and saving its choice; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
 including the kitty protocol; selection and copy; sixel and kitty graphics
