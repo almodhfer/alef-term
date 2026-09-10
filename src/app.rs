@@ -118,6 +118,16 @@ impl Config {
     }
 }
 
+/// The window decoration that suits a palette: macOS draws the title bar in
+/// the system appearance otherwise, a dark bar over a light theme.
+fn window_theme(p: &crate::color::Palette) -> winit::window::Theme {
+    if p.is_dark() {
+        winit::window::Theme::Dark
+    } else {
+        winit::window::Theme::Light
+    }
+}
+
 /// Something a pane asks the application to do on its behalf.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Request {
@@ -361,15 +371,14 @@ impl Pane {
     /// Show the highlighted theme in this window without committing to it.
     fn picker_preview(&mut self) {
         let Some(t) = self.picker.as_ref().and_then(|p| p.current()) else { return };
-        self.term.set_palette(self.cfg.palette_for(t));
+        self.show_palette(self.cfg.palette_for(t));
         self.needs_redraw = true;
     }
 
     /// Close the picker, back on the theme in use before it opened.
     fn picker_cancel(&mut self) {
         if self.picker.take().is_some() {
-            self.term.set_palette(self.cfg.palette.clone());
-            self.needs_redraw = true;
+            self.show_palette(self.cfg.palette.clone());
         }
     }
 
@@ -419,8 +428,22 @@ impl Pane {
     /// when a program resets them.
     fn apply_theme(&mut self, t: &'static Theme) {
         self.cfg.set_theme(t);
-        self.term.set_palette(self.cfg.palette.clone());
+        self.show_palette(self.cfg.palette.clone());
+    }
+
+    /// Draw with `p` from the next frame, title bar included.
+    fn show_palette(&mut self, p: crate::color::Palette) {
+        if let Some(w) = &self.window {
+            w.set_theme(Some(window_theme(&p)));
+        }
+        self.term.set_palette(p);
         self.needs_redraw = true;
+        // A program that asked (mode 2031) hears about the change now, not
+        // whenever the shell next writes something.
+        if !self.term.replies.is_empty() {
+            let replies = std::mem::take(&mut self.term.replies);
+            self.write_pty(&replies);
+        }
     }
 
     /// Open the search bar, seeded with a one-line selection if there is one.
@@ -841,6 +864,7 @@ impl Pane {
         let (cw, ch) = self.cell_size();
         let attrs = Window::default_attributes()
             .with_title("arabic-term")
+            .with_theme(Some(window_theme(&self.cfg.palette)))
             .with_inner_size(LogicalSize::new(
                 self.cfg.cols as f32 * cw,
                 self.cfg.rows as f32 * ch,

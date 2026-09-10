@@ -309,6 +309,13 @@ impl Palette {
         Self::from_theme(default_theme())
     }
 
+    /// Whether the background reads as dark, which is what a program asking
+    /// for the colour scheme (`CSI ?996n`) is told.
+    pub fn is_dark(&self) -> bool {
+        let Rgb(r, g, b) = self.bg;
+        0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32 <= 128.0
+    }
+
     /// Resolve a cell colour to RGB. `is_fg` picks which default applies.
     #[inline]
     pub fn resolve(&self, c: Color, is_fg: bool) -> Rgb {

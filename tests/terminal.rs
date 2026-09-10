@@ -602,3 +602,41 @@ fn prompt_marks_are_dropped_with_the_scrollback() {
     assert!(marks.iter().all(|&l| l >= oldest), "{marks:?} vs oldest {oldest} (scrolled {scrolled})");
     assert_eq!(marks, vec![3, 4, 5]);
 }
+
+#[test]
+fn the_colour_scheme_is_reported_when_asked() {
+    let mut t = run(4, 20, "\x1b[?996n");
+    assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?997;1n", "the default theme is dark");
+    t.replies.clear();
+    t.set_palette(arabic_term::color::Palette::light());
+    Vt::new().feed(&mut t, b"\x1b[?996n");
+    assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?997;2n");
+}
+
+#[test]
+fn mode_2031_is_known_and_reported() {
+    let t = run(4, 20, "\x1b[?2031$p");
+    assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?2031;2$y", "known, and off until asked for");
+    let t = run(4, 20, "\x1b[?2031h\x1b[?2031$p");
+    assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?2031;1$y");
+}
+
+#[test]
+fn a_theme_change_is_announced_only_to_programs_that_asked() {
+    use arabic_term::color::Palette;
+    let mut t = run(4, 20, "");
+    t.set_palette(Palette::light());
+    assert!(t.replies.is_empty(), "nothing unasked without mode 2031");
+
+    Vt::new().feed(&mut t, b"\x1b[?2031h");
+    t.set_palette(Palette::dark());
+    assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?997;1n");
+    t.replies.clear();
+    t.set_palette(Palette::light());
+    assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?997;2n");
+
+    t.replies.clear();
+    Vt::new().feed(&mut t, b"\x1b[?2031l");
+    t.set_palette(Palette::dark());
+    assert!(t.replies.is_empty(), "and nothing once it is switched off");
+}

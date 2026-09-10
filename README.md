@@ -186,7 +186,8 @@ characters and lines, `DECSTBM` scroll regions, the alternate screen, scrollback
 autowrap with deferred wrap at the margin, wide (CJK) characters with spacers,
 combining marks, DEC line-drawing charset, bracketed paste, focus events, window title (OSC 0/2), palette changes (OSC 4),
 hyperlinks (OSC 8), default colour set/query/reset (OSC 10/11/12, 104, 110–112) so
-programs can learn the background and pick a theme, the working directory
+programs can learn the background and pick a theme, light/dark scheme reports
+(`CSI ?996n`, and mode 2031 to be told when the theme changes), the working directory
 (OSC 7) and prompt marks (OSC 133) for jumping between commands, cursor shape (DECSCUSR:
 block, underline, bar, blinking or steady), a visual bell, clipboard writes (OSC 52), synchronized output (?2026) so
 full-screen programs do not tear mid-repaint, mode reporting (DECRQM) so they
@@ -210,7 +211,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-196 tests, covering: VT and grid behaviour; the built-in themes, the theme
+199 tests, covering: VT and grid behaviour; the built-in themes, the theme
 picker and saving its choice; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding

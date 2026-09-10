@@ -41,6 +41,9 @@ bitflags::bitflags! {
         const ALT_SCROLL      = 1 << 15;
         /// Synchronized output (?2026): hold frames until the update is done.
         const SYNC_OUTPUT     = 1 << 16;
+        /// Report light/dark changes unasked (?2031), so programs such as
+        /// herdr can follow a theme switch.
+        const COLOR_SCHEME_UPDATES = 1 << 17;
     }
 }
 
@@ -237,6 +240,15 @@ impl Terminal {
         self.palette = p.clone();
         self.default_palette = p;
         self.damaged = true;
+        if self.modes.contains(Modes::COLOR_SCHEME_UPDATES) {
+            self.report_color_scheme();
+        }
+    }
+
+    /// `CSI ?997;1n` for a dark scheme, `;2n` for a light one.
+    fn report_color_scheme(&mut self) {
+        let n = if self.palette.is_dark() { 1 } else { 2 };
+        self.replies.extend_from_slice(format!("\x1b[?997;{n}n").as_bytes());
     }
 
     /// Answer an OSC colour query in xterm's `rgb:rrrr/gggg/bbbb` form,
@@ -379,6 +391,7 @@ impl Terminal {
             1007 => Modes::ALT_SCROLL,
             2004 => Modes::BRACKETED_PASTE,
             2026 => Modes::SYNC_OUTPUT,
+            2031 => Modes::COLOR_SCHEME_UPDATES,
             8888 => Modes::BIDI,
             _ => return None,
         })
@@ -457,6 +470,7 @@ impl Terminal {
             (true, 1006) => Modes::MOUSE_SGR,
             (true, 1007) => Modes::ALT_SCROLL,
             (true, 2026) => Modes::SYNC_OUTPUT,
+            (true, 2031) => Modes::COLOR_SCHEME_UPDATES,
             (true, 2004) => Modes::BRACKETED_PASTE,
             (true, 8888) => Modes::BIDI,
             (true, 47) | (true, 1047) | (true, 1049) => {
@@ -1124,6 +1138,9 @@ impl Perform for Terminal {
             }
             'm' => self.sgr(params),
             'n' => match arg(0) {
+                // The colour scheme, which is how a program picks its light
+                // or dark look without guessing from the background.
+                996 if private => self.report_color_scheme(),
                 5 => self.replies.extend_from_slice(b"\x1b[0n"),
                 6 => {
                     let (top, _) = self.row_bounds();
