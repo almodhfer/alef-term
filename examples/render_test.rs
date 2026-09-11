@@ -1,7 +1,9 @@
 //! Render a showcase screen offline to a PPM, without opening a window.
 //! Useful for eyeballing layout changes and for regression screenshots.
 use arabic_term::font::Fonts;
+use arabic_term::color::{default_theme, find_theme, Palette};
 use arabic_term::render::{Canvas, DrawOpts, Renderer};
+use arabic_term::selection::{Selection, Span};
 use arabic_term::term::{BidiMode, Terminal, Vt};
 
 const SCRIPT: &str = concat!(
@@ -25,6 +27,7 @@ const SCRIPT: &str = concat!(
     "│ صورة.png    │ 340 KB   │ صورة   │\r\n",
     "└─────────────┴──────────┴────────┘\r\n",
     "\x1b[7m NORMAL \x1b[0m\x1b[44m main.rs                       سطر ٤٢/128 \x1b[0m\r\n",
+    "\x1b[2;4mDim text · نص خافت ───\x1b[0m\r\n",
     "\x1b[1;32m$\x1b[0m ",
 );
 
@@ -33,12 +36,19 @@ fn main() -> anyhow::Result<()> {
     let mut scale: Option<f32> = None;
     let mut size = 17.0f32;
     let mut mode = BidiMode::ForceLtr;
+    let mut theme = default_theme();
+    let mut highlights = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--arabic-scale" => scale = args.next().and_then(|v| v.parse().ok()),
             "--font-size" => size = args.next().and_then(|v| v.parse().ok()).unwrap_or(size),
             "--rtl" => mode = BidiMode::ForceRtl,
             "--auto" => mode = BidiMode::Auto,
+            "--theme" => {
+                let name = args.next().unwrap_or_default();
+                theme = find_theme(&name).ok_or_else(|| anyhow::anyhow!("unknown theme: {name}"))?;
+            }
+            "--highlights" => highlights = true,
             _ => {}
         }
     }
@@ -46,6 +56,7 @@ fn main() -> anyhow::Result<()> {
     let (rows, cols) = (23usize, 66usize);
     let mut fonts = Fonts::new(size, scale)?;
     let mut term = Terminal::new(rows, cols, 1000);
+    term.set_palette(Palette::from_theme(theme));
     term.bidi_mode = mode;
     let mut vt = Vt::new();
     vt.feed(&mut term, SCRIPT.as_bytes());
@@ -55,7 +66,18 @@ fn main() -> anyhow::Result<()> {
     let h = (rows as f32 * fonts.cell_h).ceil() as usize + 2 * renderer.pad_y as usize;
     let mut buf = vec![0u32; w * h];
     let mut canvas = Canvas { buf: &mut buf, width: w, height: h };
-    renderer.draw(&mut canvas, &term, &mut fonts, &DrawOpts::default());
+    let spans = [Span { line: 1, start: 0, end: 13 }, Span { line: 11, start: 0, end: 5 }];
+    let opts = if highlights {
+        DrawOpts {
+            selection: Some(Selection { start: (19, 0), end: (19, 7), block: false }),
+            highlights: &spans,
+            current: &spans[1..],
+            ..Default::default()
+        }
+    } else {
+        DrawOpts::default()
+    };
+    renderer.draw(&mut canvas, &term, &mut fonts, &opts);
 
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
     for px in buf.iter() {

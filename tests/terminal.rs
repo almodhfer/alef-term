@@ -411,6 +411,57 @@ fn osc_colour_queries_are_answered_in_xterm_form() {
 }
 
 #[test]
+fn combined_colour_queries_report_the_entire_current_theme() {
+    use arabic_term::color::Palette;
+    let mut t = run(2, 10, "");
+    let mut vt = Vt::new();
+    for palette in [Palette::light(), Palette::dark()] {
+        t.set_palette(palette.clone());
+        for end in ["\x07", "\x1b\\"] {
+            t.replies.clear();
+            vt.feed(&mut t, format!("\x1b]10;?;?;?{end}").as_bytes());
+            let expected: String = [palette.fg, palette.bg, palette.cursor].iter().enumerate().map(|(i, c)| {
+                format!("\x1b]{};rgb:{:04x}/{:04x}/{:04x}{end}", 10 + i, c.0 as u32 * 257, c.1 as u32 * 257, c.2 as u32 * 257)
+            }).collect();
+            assert_eq!(t.replies, expected.as_bytes());
+        }
+    }
+    vt.feed(&mut t, b"\x1b]10;rgb:12/34/56;rgb:ab/cd/ef;rgb:98/76/54\x07");
+    assert_eq!(t.palette.fg, arabic_term::color::Rgb(0x12, 0x34, 0x56));
+    assert_eq!(t.palette.bg, arabic_term::color::Rgb(0xab, 0xcd, 0xef));
+    assert_eq!(t.palette.cursor, arabic_term::color::Rgb(0x98, 0x76, 0x54));
+}
+
+#[test]
+fn a_full_reset_preserves_the_configured_theme_and_osc_reset_defaults() {
+    use arabic_term::color::{Palette, Rgb, THEMES};
+    let mut t = run(2, 10, "");
+    let mut vt = Vt::new();
+    for theme in THEMES {
+        let mut palette = Palette::from_theme(theme);
+        palette.cursor = Rgb(0x12, 0x34, 0x56);
+        palette.selection_bg = Rgb(0xab, 0xcd, 0xef);
+        t.set_palette(palette.clone());
+        vt.feed(&mut t, b"\x1b]11;rgb:00/00/00\x07\x1b]4;1;rgb:00/00/00\x07\x1b[7mtest\x1bc");
+        assert_eq!(t.palette.bg, palette.bg, "{} after RIS", theme.name);
+        assert_eq!(t.palette.fg, palette.fg);
+        assert_eq!(t.palette.colors, palette.colors);
+        assert_eq!(t.palette.cursor, palette.cursor);
+        assert_eq!(t.palette.selection_bg, palette.selection_bg);
+        assert_eq!(t.palette.search_bg, palette.search_bg);
+        assert_eq!(t.palette.search_current_bg, palette.search_current_bg);
+        assert_eq!(line(&t, 0), "");
+        assert_eq!(t.grid.screen.cursor.attrs, arabic_term::grid::Attrs::empty());
+
+        vt.feed(&mut t, b"\x1b]10;rgb:00/00/00;rgb:00/00/00;rgb:00/00/00\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07\x1b]104\x07");
+        assert_eq!(t.palette.fg, palette.fg);
+        assert_eq!(t.palette.bg, palette.bg);
+        assert_eq!(t.palette.cursor, palette.cursor);
+        assert_eq!(t.palette.colors, palette.colors);
+    }
+}
+
+#[test]
 fn osc_colour_sets_and_resets() {
     use arabic_term::color::Rgb;
     let mut t = run(2, 10, "");

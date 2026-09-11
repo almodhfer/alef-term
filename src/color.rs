@@ -11,6 +11,24 @@ impl Rgb {
         // 0RGB in the low 24 bits of a u32, the software canvas layout.
         ((self.0 as u32) << 16) | ((self.1 as u32) << 8) | self.2 as u32
     }
+
+    /// Faint text moves toward the surface it is drawn on, in either theme.
+    pub fn dimmed(self, bg: Rgb) -> Self {
+        mix(self, bg, 128)
+    }
+
+    fn luminance(self) -> f32 {
+        let linear = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * linear(self.0) + 0.7152 * linear(self.1) + 0.0722 * linear(self.2)
+    }
+
+    fn contrast(self, bg: Rgb) -> f32 {
+        let (a, b) = (self.luminance(), bg.luminance());
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
 }
 
 /// A cell colour before palette resolution. Kept indexed so that live palette
@@ -262,6 +280,21 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Preserve coloured text over a terminal highlight when it is readable.
+    /// Inverse text and application colours may need the theme foreground,
+    /// or black/white on a particularly strong highlight or custom cursor.
+    pub fn highlight_fg(&self, fg: Rgb, bg: Rgb) -> Rgb {
+        if fg.contrast(bg) >= 4.5 {
+            fg
+        } else if self.fg.contrast(bg) >= 4.5 {
+            self.fg
+        } else {
+            let black = Rgb(0, 0, 0);
+            let white = Rgb(255, 255, 255);
+            if black.contrast(bg) >= white.contrast(bg) { black } else { white }
+        }
+    }
+
     /// The 256-colour table from 16 ANSI colours: xterm's 6x6x6 cube and
     /// 24-step grey ramp follow.
     fn table(ansi: [Rgb; 16]) -> [Rgb; 256] {

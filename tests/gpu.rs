@@ -37,43 +37,46 @@ fn gpu_frame_matches_the_software_canvas() {
     let w = (cols as f32 * fonts.cell_w).ceil() as usize + 2 * renderer.pad_x as usize;
     let h = (rows as f32 * fonts.cell_h).ceil() as usize + 2 * renderer.pad_y as usize;
 
-    let mut cpu = vec![0u32; w * h];
-    let mut canvas = Canvas { buf: &mut cpu, width: w, height: h };
-    draw(&mut canvas, &term, &mut fonts, &mut renderer);
-
     let Ok(mut gpu) = Gpu::headless(w as u32, h as u32) else {
         eprintln!("no GPU available; skipping");
         return;
     };
-    // Two frames: the second hits the glyph atlas and image cache.
-    let mut frames = Vec::new();
-    for _ in 0..2 {
-        gpu.begin();
-        draw(&mut gpu, &term, &mut fonts, &mut renderer);
-        frames.push(gpu.read_back().unwrap());
-    }
-
-    let bg = Palette::dark().bg.pack();
-    let inked = cpu.iter().filter(|&&p| p != bg).count();
-    assert!(inked > w * h / 20, "software frame is nearly blank: {inked} inked pixels");
-
-    for (n, frame) in frames.iter().enumerate() {
-        assert_eq!(frame.len(), cpu.len());
-        let mut off = Vec::new();
-        for (i, (a, b)) in cpu.iter().zip(frame).enumerate() {
-            let d = (0..3)
-                .map(|s| ((a >> (8 * s)) & 0xff).abs_diff((b >> (8 * s)) & 0xff))
-                .max()
-                .unwrap();
-            if d > 2 {
-                let (x, y) = (i % w, i / w);
-                let col = (x as f32 - renderer.pad_x) / fonts.cell_w;
-                let row = (y as f32 - renderer.pad_y) / fonts.cell_h;
-                off.push(format!("({x},{y}) row {row:.2} col {col:.2}: cpu {a:06x} gpu {b:06x}"));
-            }
+    // Switch with the same layouts and GPU atlas still cached.
+    for palette in [Palette::dark(), Palette::light()] {
+        term.set_palette(palette);
+        let mut cpu = vec![0u32; w * h];
+        let mut canvas = Canvas { buf: &mut cpu, width: w, height: h };
+        draw(&mut canvas, &term, &mut fonts, &mut renderer);
+        // Two frames: the second hits the glyph atlas and image cache.
+        let mut frames = Vec::new();
+        for _ in 0..2 {
+            gpu.begin();
+            draw(&mut gpu, &term, &mut fonts, &mut renderer);
+            frames.push(gpu.read_back().unwrap());
         }
-        // Blends round differently by at most one step; anything more is a
-        // misplaced or mislayered primitive.
-        assert!(off.is_empty(), "frame {n}: {} pixels differ by more than 2:\n{}", off.len(), off.join("\n"));
+
+        let bg = term.palette.bg.pack();
+        let inked = cpu.iter().filter(|&&p| p != bg).count();
+        assert!(inked > w * h / 20, "software frame is nearly blank: {inked} inked pixels");
+
+        for (n, frame) in frames.iter().enumerate() {
+            assert_eq!(frame.len(), cpu.len());
+            let mut off = Vec::new();
+            for (i, (a, b)) in cpu.iter().zip(frame).enumerate() {
+                let d = (0..3)
+                    .map(|s| ((a >> (8 * s)) & 0xff).abs_diff((b >> (8 * s)) & 0xff))
+                    .max()
+                    .unwrap();
+                if d > 2 {
+                    let (x, y) = (i % w, i / w);
+                    let col = (x as f32 - renderer.pad_x) / fonts.cell_w;
+                    let row = (y as f32 - renderer.pad_y) / fonts.cell_h;
+                    off.push(format!("({x},{y}) row {row:.2} col {col:.2}: cpu {a:06x} gpu {b:06x}"));
+                }
+            }
+            // Blends round differently by at most one step; anything more is a
+            // misplaced or mislayered primitive.
+            assert!(off.is_empty(), "frame {n}: {} pixels differ by more than 2:\n{}", off.len(), off.join("\n"));
+        }
     }
 }

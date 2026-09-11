@@ -153,6 +153,28 @@ the `theme` line of the configuration file; nothing else in the file is
 touched, and a file with an error in it is left alone. `[colors]` overrides
 apply on top of whichever theme is chosen.
 
+Selection and search highlights keep coloured text where it is readable and
+use a contrasting foreground where needed. Dim text blends toward its cell
+background in both light and dark themes. A terminal reset keeps the selected
+theme, including configured colour overrides.
+
+Full-screen applications can also have their own themes. Arabic Term reports
+its current colours and light/dark appearance; applications that draw explicit
+RGB or 256-colour backgrounds must choose their own matching light scheme.
+For [Herdr](https://herdr.dev/docs/configuration/#theme), enable this in
+`~/.config/herdr/config.toml` on each machine:
+
+```toml
+[theme]
+auto_switch = true
+dark_name = "catppuccin"
+light_name = "catppuccin-latte"
+```
+
+Shared `[theme.custom]` overrides in Herdr apply to both appearances. Put dark
+background overrides under `[theme.custom.dark]` and light ones under
+`[theme.custom.light]` so sidebar and selection backgrounds follow the switch.
+
 | Key | Action |
 | --- | --- |
 | `Cmd` `+` / `-` / `0` | font size |
@@ -211,7 +233,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-199 tests, covering: VT and grid behaviour; the built-in themes, the theme
+207 tests, covering: VT and grid behaviour; the built-in themes, the theme
 picker and saving its choice; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
@@ -227,6 +249,8 @@ which is how the editor and htop cases above were verified.
 
 `cargo run --release --example render_test` renders a showcase screen to a file
 without opening a window, which is handy for eyeballing layout changes.
+Add `-- --theme light --highlights` to check selection, search and dim text in
+a light theme; `OUT=/tmp/theme.ppm` sets the output file.
 `cargo run --release --example bench` reports frame times for a static screen,
 a screen with one row changed, and a screen with every row changed — the last
 being what a multiplexer produces whenever one pane scrolls, since each row

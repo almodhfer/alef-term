@@ -1,7 +1,7 @@
 //! Turning the terminal into pixels: layout lookup, then a stream of
 //! rectangles, glyphs and images sent to a [`Target`].
 
-use crate::color::{Color, Palette, Rgb, Theme};
+use crate::color::{Palette, Rgb, Theme};
 use crate::font::{Fonts, RasterGlyph};
 use crate::grid::Attrs;
 use crate::layout::{Layouter, RowLayout};
@@ -352,8 +352,7 @@ impl Renderer {
         let palette: &Palette = &term.palette;
         let selection = opts.selection;
         let reverse = term.modes.contains(crate::term::Modes::REVERSE_VIDEO);
-        let (def_fg, def_bg) =
-            if reverse { (palette.bg, palette.fg) } else { (palette.fg, palette.bg) };
+        let def_bg = if reverse { palette.fg } else { palette.bg };
         canvas.clear(def_bg);
 
         let cell_w = fonts.cell_w;
@@ -361,19 +360,6 @@ impl Renderer {
         let baseline = fonts.baseline;
         let cols = term.grid.cols;
         let rows = term.grid.rows;
-
-        let resolve = |c: Color, is_fg: bool| -> Rgb {
-            match c {
-                Color::Default => {
-                    if is_fg {
-                        def_fg
-                    } else {
-                        def_bg
-                    }
-                }
-                other => palette.resolve(other, is_fg),
-            }
-        };
 
         let mut keys: Vec<u64> = Vec::with_capacity(rows + 1);
         self.live.clear();
@@ -383,6 +369,8 @@ impl Renderer {
         let bidi_on = term.modes.contains(crate::term::Modes::BIDI);
 
         let top = term.grid.viewport_top();
+        let mut highlights = vec![None; cols];
+        let mut colours = Vec::with_capacity(cols);
         for ri in first..rows as isize {
             let abs = top + ri;
             let Some(row) = term.grid.line(abs) else {
@@ -424,55 +412,57 @@ impl Renderer {
             let layout = self.cache.get(&key).expect("just inserted");
             let y = self.pad_y + (ri as f32 + frac) * cell_h;
 
-            // --- backgrounds, in visual column order ---
-            for (col, &cell_idx) in layout.visual_cells.iter().enumerate() {
-                let Some(cell) = row.cells.get(cell_idx) else { continue };
+            // Resolve each logical cell once so text, borders and decorations
+            // share the same inverse, dim and highlight colours. Selection
+            // sits above search hits; the current hit sits above other hits.
+            highlights.fill(None);
+            if abs >= 0 {
+                for (spans, bg) in [(opts.highlights, palette.search_bg), (opts.current, palette.search_current_bg)] {
+                    let lo = spans.partition_point(|s| s.line < abs as usize);
+                    for s in &spans[lo..] {
+                        if s.line != abs as usize { break; }
+                        highlights[s.start.min(cols)..s.end.min(cols)].fill(Some(bg));
+                    }
+                }
+            }
+            colours.clear();
+            colours.extend(row.cells.iter().take(cols).enumerate().map(|(cell_idx, cell)| {
+                let mut fg = palette.resolve(cell.fg, true);
+                let mut bg = palette.resolve(cell.bg, false);
+                if cell.attrs.contains(Attrs::INVERSE) ^ reverse {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                if cell.attrs.contains(Attrs::DIM) {
+                    fg = fg.dimmed(bg);
+                }
                 let selected = ri >= 0
                     && abs >= 0
                     && selection.map_or(false, |s| s.contains(abs as usize, cell_idx));
-                let inverse = cell.attrs.contains(Attrs::INVERSE) ^ reverse;
-                let mut bg = if inverse {
-                    resolve(cell.fg, true)
-                } else {
-                    resolve(cell.bg, false)
-                };
                 if selected {
                     bg = palette.selection_bg;
+                    fg = palette.selection_fg.unwrap_or_else(|| palette.highlight_fg(fg, bg));
+                } else if let Some(highlight) = highlights[cell_idx] {
+                    bg = highlight;
+                    fg = palette.highlight_fg(fg, bg);
                 }
-                if bg != def_bg || selected {
-                    canvas.fill_rect(self.pad_x + col as f32 * cell_w, y, cell_w, cell_h, bg);
-                }
-            }
+                (fg, bg)
+            }));
 
-            // --- search hits, over the cell background and under the text ---
-            if abs >= 0 && !opts.highlights.is_empty() {
-                let l = abs as usize;
-                for (spans, colour) in [(opts.highlights, palette.search_bg), (opts.current, palette.search_current_bg)] {
-                    let lo = spans.partition_point(|s| s.line < l);
-                    for s in &spans[lo..] {
-                        if s.line != l {
-                            break;
-                        }
-                        for cell in s.start..s.end.min(cols) {
-                            let col = layout.column_of(cell);
-                            canvas.fill_rect(self.pad_x + col as f32 * cell_w, y, cell_w, cell_h, colour);
-                        }
-                    }
+            // --- backgrounds, in visual column order ---
+            for (col, &cell_idx) in layout.visual_cells.iter().enumerate() {
+                let Some(&(_, bg)) = colours.get(cell_idx) else { continue };
+                if bg != def_bg {
+                    canvas.fill_rect(self.pad_x + col as f32 * cell_w, y, cell_w, cell_h, bg);
                 }
             }
 
             // --- procedural box drawing, per visual column ---
             for (col, &cell_idx) in layout.visual_cells.iter().enumerate() {
                 let Some(cell) = row.cells.get(cell_idx) else { continue };
-                if !crate::boxdraw::is_procedural(cell.ch) {
+                if !crate::boxdraw::is_procedural(cell.ch) || cell.attrs.contains(Attrs::HIDDEN) {
                     continue;
                 }
-                let inverse = cell.attrs.contains(Attrs::INVERSE) ^ reverse;
-                let fg = if inverse {
-                    resolve(cell.bg, false)
-                } else {
-                    resolve(cell.fg, true)
-                };
+                let fg = colours[cell_idx].0;
                 crate::boxdraw::draw(
                     canvas,
                     cell.ch,
@@ -492,23 +482,7 @@ impl Renderer {
                 if cell.attrs.contains(Attrs::HIDDEN) {
                     continue;
                 }
-                let inverse = cell.attrs.contains(Attrs::INVERSE) ^ reverse;
-                let selected = ri >= 0
-                    && abs >= 0
-                    && selection.map_or(false, |s| s.contains(abs as usize, g.cell));
-                let mut fg = if inverse {
-                    resolve(cell.bg, false)
-                } else {
-                    resolve(cell.fg, true)
-                };
-                if selected {
-                    if let Some(sfg) = palette.selection_fg {
-                        fg = sfg;
-                    }
-                }
-                if cell.attrs.contains(Attrs::DIM) {
-                    fg = Rgb(fg.0 / 2 + 8, fg.1 / 2 + 8, fg.2 / 2 + 8);
-                }
+                let fg = colours[g.cell].0;
 
                 let gx = self.pad_x + g.x;
                 let gy = y + baseline - g.y;
@@ -523,12 +497,13 @@ impl Renderer {
             let hover = opts.hover_link.filter(|h| abs >= 0 && h.line == abs as usize);
             for (col, &cell_idx) in layout.visual_cells.iter().enumerate() {
                 let Some(cell) = row.cells.get(cell_idx) else { continue };
+                if cell.attrs.contains(Attrs::HIDDEN) { continue; }
                 if hover.is_some_and(|h| cell_idx >= h.start && cell_idx < h.end) {
                     let x = self.pad_x + col as f32 * cell_w;
                     canvas.fill_rect(x, y + baseline + 2.0, cell_w, 1.0, palette.cursor);
                 }
                 if cell.attrs.intersects(Attrs::UNDERLINE | Attrs::STRIKEOUT) {
-                    let fg = resolve(cell.fg, true);
+                    let fg = colours[cell_idx].0;
                     let x = self.pad_x + col as f32 * cell_w;
                     if cell.attrs.contains(Attrs::UNDERLINE) {
                         canvas.fill_rect(x, y + baseline + 2.0, cell_w, 1.0, fg);
@@ -619,7 +594,7 @@ impl Renderer {
             let n = query_cells.cells.len() as f32;
             let caret_x = if rtl { x0 + pad + qw - n * cell_w - 1.0 } else { x0 + pad + n * cell_w };
             canvas.fill_rect(caret_x, ty, 2.0, cell_h, palette.cursor);
-            self.draw_text(canvas, fonts, &count_cells, x0 + w - pad - cw_, ty, palette.colors[8], palette.bg, term);
+            self.draw_text(canvas, fonts, &count_cells, x0 + w - pad - cw_, ty, palette.fg.dimmed(palette.bg), palette.bg, term);
         }
 
         // --- theme picker, centred over everything ---
@@ -687,7 +662,7 @@ impl Renderer {
                             let ox = gx.floor() as i32 + raster.left;
                             let oy = gy.floor() as i32 - raster.top;
                             if !raster.color {
-                                canvas.glyph(raster, ox, oy, def_bg);
+                                canvas.glyph(raster, ox, oy, palette.highlight_fg(def_bg, palette.cursor));
                             }
                         }
                     }
@@ -720,8 +695,7 @@ impl Renderer {
         let (cw, ch) = (canvas.width() as f32, canvas.height() as f32);
         // Secondary text, halfway to the background: some themes' bright
         // black is too faint to read as text.
-        let half = |a: u8, b: u8| ((a as u16 + b as u16) / 2) as u8;
-        let dim = Rgb(half(palette.fg.0, palette.bg.0), half(palette.fg.1, palette.bg.1), half(palette.fg.2, palette.bg.2));
+        let dim = palette.fg.dimmed(palette.bg);
 
         let title_cols = p.themes.iter().map(|t| t.title.chars().count()).max().unwrap_or(0).max(16);
         let inner_cols = (1 + title_cols + 2 + SWATCHES + 1).max(PICKER_HINT.chars().count() + 1);

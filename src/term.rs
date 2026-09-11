@@ -847,22 +847,25 @@ impl Perform for Terminal {
                 // Default foreground, background and cursor colour. Programs
                 // query these on startup to pick a light or dark theme, and
                 // some hang until they hear back.
-                let which = cmd[1] - b'0';
-                let Some(spec) = params.get(1) else { return };
-                if *spec == b"?" {
-                    let c = match which {
-                        0 => self.palette.fg,
-                        1 => self.palette.bg,
-                        _ => self.palette.cursor,
-                    };
-                    self.reply_color(&format!("1{which}"), c, bell_terminated);
-                } else if let Some(rgb) = parse_xcolor(spec) {
-                    match which {
-                        0 => self.palette.fg = rgb,
-                        1 => self.palette.bg = rgb,
-                        _ => self.palette.cursor = rgb,
+                // Successive parameters address successive colours, e.g.
+                // OSC 10;?;? queries both foreground and background.
+                let start = (cmd[1] - b'0') as usize;
+                for (which, spec) in (start..3).zip(&params[1..]) {
+                    if *spec == b"?" {
+                        let c = match which {
+                            0 => self.palette.fg,
+                            1 => self.palette.bg,
+                            _ => self.palette.cursor,
+                        };
+                        self.reply_color(&format!("1{which}"), c, bell_terminated);
+                    } else if let Some(rgb) = parse_xcolor(spec) {
+                        match which {
+                            0 => self.palette.fg = rgb,
+                            1 => self.palette.bg = rgb,
+                            _ => self.palette.cursor = rgb,
+                        }
+                        self.damaged = true;
                     }
-                    self.damaged = true;
                 }
             }
             b"7" => {
@@ -1233,10 +1236,15 @@ impl Perform for Terminal {
                 }
             }
             (None, b'c') => {
-                // RIS: full reset.
+                // RIS resets application state, retaining the user's theme
+                // and the palette that future OSC resets should restore.
                 let (rows, cols) = (self.rows(), self.cols());
                 let sb = self.grid.max_scrollback;
+                let palette = self.default_palette.clone();
+                let cell_px = self.cell_px;
                 *self = Terminal::new(rows, cols, sb);
+                self.set_palette(palette);
+                self.cell_px = cell_px;
             }
             (Some(b'('), b'0') => self.dec_graphics = true,
             (Some(b'('), _) => self.dec_graphics = false,
