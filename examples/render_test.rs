@@ -9,6 +9,7 @@ use arabic_term::term::{BidiMode, Terminal, Vt};
 const SCRIPT: &str = concat!(
     "\x1b[1;36m~/مشاريع\x1b[0m \x1b[1;32m$\x1b[0m echo \"مرحبا بالعالم\"\r\n",
     "مرحبا بالعالم\r\n",
+    "افتح الملف README ثم احفظ التغييرات\r\n",
     "\x1b[1;32m$\x1b[0m cat بسملة.txt\r\n",
     "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ\r\n",
     "\x1b[1;32m$\x1b[0m ls\r\n",
@@ -35,41 +36,67 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let mut scale: Option<f32> = None;
     let mut size = 17.0f32;
-    let mut mode = BidiMode::ForceLtr;
+    let mut mode = BidiMode::default();
+    let mut dpi = 1.0f32;
     let mut theme = default_theme();
     let mut highlights = false;
+    let mut commands = false;
+    let mut contrast_demo = false;
+    let mut minimum_contrast = 4.5;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--arabic-scale" => scale = args.next().and_then(|v| v.parse().ok()),
             "--font-size" => size = args.next().and_then(|v| v.parse().ok()).unwrap_or(size),
             "--rtl" => mode = BidiMode::ForceRtl,
             "--auto" => mode = BidiMode::Auto,
+            "--ltr" => mode = BidiMode::ForceLtr,
+            "--dpi" => dpi = args.next().and_then(|v| v.parse().ok()).unwrap_or(1.0),
             "--theme" => {
                 let name = args.next().unwrap_or_default();
                 theme = find_theme(&name).ok_or_else(|| anyhow::anyhow!("unknown theme: {name}"))?;
             }
             "--highlights" => highlights = true,
+            "--commands" => commands = true,
+            "--contrast-demo" => contrast_demo = true,
+            "--minimum-contrast" => minimum_contrast = args.next().and_then(|v| v.parse().ok()).unwrap_or(4.5),
             _ => {}
         }
     }
 
-    let (rows, cols) = (23usize, 66usize);
-    let mut fonts = Fonts::new(size, scale)?;
+    let (rows, cols) = if contrast_demo { (13usize, 72usize) } else { (24usize, 66usize) };
+    let mut fonts = Fonts::new(size * dpi, scale)?;
     let mut term = Terminal::new(rows, cols, 1000);
     term.set_palette(Palette::from_theme(theme));
     term.bidi_mode = mode;
     let mut vt = Vt::new();
-    vt.feed(&mut term, SCRIPT.as_bytes());
+    let demo = concat!(
+        "\x1b[1mLight theme · application colour compatibility\x1b[0m\r\n",
+        "\r\n",
+        "File: \x1b[38;2;180;190;254mmain.rs   README.md   src/render.rs\x1b[0m\r\n",
+        "\x1b[38;2;180;190;254mافتح الملف README ثم احفظ التغييرات\x1b[0m\r\n",
+        "\x1b[38;2;249;226;175mWorking · 1 shell · 2 checks remaining\x1b[0m\r\n",
+        "\x1b[38;2;150;150;160mSecondary status and timestamps\x1b[0m\r\n",
+        "\x1b[2mDim text stays secondary · نص خافت\x1b[0m\r\n",
+        "\r\n",
+        "\x1b[38;2;180;190;254;48;2;45;50;65m Explicit dark panel keeps its own background \x1b[0m\r\n",
+        "\x1b[38;2;180;190;254;4mUnderlined links · روابط واضحة\x1b[0m\r\n",
+        "\r\n",
+        "\x1b[38;2;40;80;140mAlready-readable colours stay unchanged.\x1b[0m\r\n",
+    );
+    vt.feed(&mut term, if contrast_demo { demo.as_bytes() } else { SCRIPT.as_bytes() });
 
     let mut renderer = Renderer::new();
+    renderer.minimum_contrast = minimum_contrast;
+    renderer.pad_x *= dpi;
+    renderer.pad_y *= dpi;
     let w = (cols as f32 * fonts.cell_w).ceil() as usize + 2 * renderer.pad_x as usize;
     let h = (rows as f32 * fonts.cell_h).ceil() as usize + 2 * renderer.pad_y as usize;
     let mut buf = vec![0u32; w * h];
     let mut canvas = Canvas { buf: &mut buf, width: w, height: h };
-    let spans = [Span { line: 1, start: 0, end: 13 }, Span { line: 11, start: 0, end: 5 }];
-    let opts = if highlights {
+    let spans = [Span { line: 1, start: 0, end: 13 }, Span { line: 12, start: 0, end: 5 }];
+    let mut opts = if highlights {
         DrawOpts {
-            selection: Some(Selection { start: (19, 0), end: (19, 7), block: false }),
+            selection: Some(Selection { start: (20, 0), end: (20, 7), block: false }),
             highlights: &spans,
             current: &spans[1..],
             ..Default::default()
@@ -77,6 +104,8 @@ fn main() -> anyhow::Result<()> {
     } else {
         DrawOpts::default()
     };
+    let command_palette = arabic_term::commands::CommandPalette::default();
+    if commands { opts.commands = Some(&command_palette); }
     renderer.draw(&mut canvas, &term, &mut fonts, &opts);
 
     let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
@@ -85,7 +114,8 @@ fn main() -> anyhow::Result<()> {
         ppm.push((px >> 8) as u8);
         ppm.push(*px as u8);
     }
-    let out = std::env::var("OUT").unwrap_or("/private/tmp/claude-501/render_test.ppm".into());
+    let out = std::env::var("OUT").unwrap_or_else(|_| std::env::temp_dir()
+        .join("arabic-term-render.ppm").to_string_lossy().into_owned());
     std::fs::write(&out, ppm)?;
     println!("wrote {out} {w}x{h}  cell={}x{}", fonts.cell_w, fonts.cell_h);
     Ok(())

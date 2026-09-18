@@ -29,6 +29,32 @@ impl Rgb {
         let (a, b) = (self.luminance(), bg.luminance());
         (a.max(b) + 0.05) / (a.min(b) + 0.05)
     }
+
+    /// Move only unreadable ink toward black or white, keeping its colour.
+    /// Equal foreground/background is intentional concealment or artwork.
+    pub fn ensure_contrast(self, bg: Rgb, minimum: f32) -> Self {
+        if minimum <= 1.0 || !minimum.is_finite() || self == bg || self.contrast(bg) >= minimum {
+            return self;
+        }
+        let black = Rgb(0, 0, 0);
+        let white = Rgb(255, 255, 255);
+        let mut best: Option<(u32, Rgb)> = None;
+        for end in [black, white] {
+            if end.contrast(bg) < minimum { continue; }
+            let (mut lo, mut hi) = (0, 256);
+            while lo + 1 < hi {
+                let mid = (lo + hi) / 2;
+                if mix(self, end, mid).contrast(bg) >= minimum { hi = mid; }
+                else { lo = mid; }
+            }
+            if best.is_none_or(|(distance, _)| hi < distance) {
+                best = Some((hi, mix(self, end, hi)));
+            }
+        }
+        best.map(|(_, color)| color).unwrap_or_else(|| {
+            if black.contrast(bg) >= white.contrast(bg) { black } else { white }
+        })
+    }
 }
 
 /// A cell colour before palette resolution. Kept indexed so that live palette

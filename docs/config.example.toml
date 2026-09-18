@@ -2,9 +2,17 @@
 # Every key is optional; command-line flags override the file.
 
 # font = "JetBrainsMono Nerd Font Mono"
+# Cmd Shift F switches between installed Noto Naskh Arabic, Amiri,
+# Scheherazade New and Geeza Pro, and saves the choice here.
 # arabic_font = "Geeza Pro"
 font_size = 15
 # arabic_scale = 1.1        # default: derived from the font metrics
+line_height = 1.0          # 1.0..2.0; extra leading, without stretching glyphs
+padding_x = 12             # logical pixels; follows Retina/display scaling
+padding_y = 10
+bidi_mode = "auto"         # auto | ltr | rtl; Cmd R cycles while running
+copy_on_select = false     # Cmd C copies; true restores automatic copy on selection
+# working_directory = "~/projects"   # default: inherited folder, or home from the Dock
 scrollback = 10000
 cols = 96
 rows = 28
@@ -17,6 +25,7 @@ cursor_shape = "block"      # block | underline | bar
 cursor_blink = false
 visual_bell = true
 
+minimum_contrast = 4.5      # 1..21; 1 preserves exact application ink colours
 theme = "dark"              # see `arabic-term --list-themes`, or press Cmd Shift T
 renderer = "gpu"            # gpu | software (the fallback when there is no GPU)
 

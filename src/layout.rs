@@ -60,6 +60,8 @@ pub struct RowLayout {
     pub cell_to_column: Vec<usize>,
     /// True when any run in the row resolved to RTL.
     pub rtl: bool,
+    /// Direction of each logical cell; a Latin cell in a mixed row is LTR.
+    rtl_cells: Vec<bool>,
 }
 
 impl RowLayout {
@@ -71,6 +73,23 @@ impl RowLayout {
     pub fn cell_at(&self, col: usize) -> usize {
         self.visual_cells.get(col).copied().unwrap_or(col)
     }
+
+    pub fn is_rtl(&self, cell: usize) -> bool {
+        self.rtl_cells.get(cell).copied().unwrap_or(false)
+    }
+}
+
+/// A terminal field can be prose or shell syntax. Keep recognizable prompt
+/// sigils and paths anchored, while applying P2/P3 to ordinary sentences.
+/// This is deliberately small: ambiguous output can use the forced modes.
+fn auto_base(text: &str) -> Option<Level> {
+    let first = text.split_whitespace().next().unwrap_or("");
+    let prompt = first.starts_with(['$', '%', '#', '>', '❯', '➜']);
+    let path = first.starts_with(['/', '~', '.']) || first.contains('/')
+        || first.rsplit_once('.').is_some_and(|(_, ext)| {
+            !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        });
+    (prompt || path).then(Level::ltr)
 }
 
 /// One character extracted from the row, with its provenance.
@@ -168,6 +187,7 @@ impl Layouter {
 
         let mut out = RowLayout::default();
         out.cell_to_column = vec![0; row.cells.len()];
+        out.rtl_cells = vec![false; row.cells.len()];
         for c in 0..cols {
             out.visual_cells.push(c);
         }
@@ -245,9 +265,9 @@ impl Layouter {
                         if column + k < cols {
                             out.visual_cells[column + k] = it.cell + k;
                         }
-                    }
-                    if it.cell < out.cell_to_column.len() {
-                        out.cell_to_column[it.cell] = column;
+                        if it.cell + k < out.cell_to_column.len() {
+                            out.cell_to_column[it.cell + k] = column + k;
+                        }
                     }
                     column += it.columns;
                 }
@@ -277,7 +297,7 @@ impl Layouter {
                 }
             }
             let base = match mode {
-                BidiMode::Auto => None,
+                BidiMode::Auto => auto_base(&self.text),
                 BidiMode::ForceLtr => Some(Level::ltr()),
                 BidiMode::ForceRtl => Some(Level::rtl()),
             };
@@ -309,9 +329,10 @@ impl Layouter {
                         if c + k < cols {
                             out.visual_cells[c + k] = it.cell + k;
                         }
-                    }
-                    if it.cell < out.cell_to_column.len() {
-                        out.cell_to_column[it.cell] = c;
+                        if it.cell + k < out.cell_to_column.len() {
+                            out.cell_to_column[it.cell + k] = c + k;
+                            out.rtl_cells[it.cell + k] = rtl;
+                        }
                     }
                     c += it.columns;
                 }
@@ -523,6 +544,13 @@ impl Layouter {
             // Arabic is exempt because snapping is exactly what tears cursive
             // joins apart: a word has to be placed as one piece.
             if !cursive {
+                // Glyph order is visual; cluster IDs remain logical. The next
+                // glyph therefore has a *smaller* cluster ID in RTL runs.
+                let mut boundaries: Vec<usize> = kept.iter()
+                    .map(|&(k, _)| infos[k].cluster as usize).collect();
+                boundaries.sort_unstable();
+                boundaries.dedup();
+                boundaries.push(*g.items.last().unwrap() + 1);
                 let mut i = 0usize;
                 while i < kept.len() {
                     let cl = infos[kept[i].0].cluster;
@@ -533,20 +561,21 @@ impl Layouter {
                         j += 1;
                     }
                     let item = self.items.get(cl as usize).unwrap_or(&self.items[g.items[0]]);
-                    let col = out.cell_to_column.get(item.cell).copied().unwrap_or(item.cell);
                     // A cluster can cover several items — a ligature like `->`
                     // fuses two characters into one glyph — so its box is all
                     // the columns those items own, not just the first one's.
                     // Measuring only the first would squeeze the glyph into a
                     // single cell and overlap its neighbour.
-                    let next_cl = kept
-                        .get(j)
-                        .map(|&(n, _)| infos[n].cluster as usize)
-                        .unwrap_or(*g.items.last().unwrap() + 1);
-                    let span_cols: usize = (cl as usize..next_cl.max(cl as usize + 1))
-                        .filter_map(|ix| self.items.get(ix))
-                        .map(|it| it.columns)
-                        .sum();
+                    let next_cl = boundaries[boundaries.binary_search(&(cl as usize)).unwrap() + 1];
+                    let start = g.items.partition_point(|&ix| ix < cl as usize);
+                    let end = g.items.partition_point(|&ix| ix < next_cl);
+                    let mut col = out.column_of(item.cell);
+                    let mut span_cols = 0;
+                    for &ix in &g.items[start..end] {
+                        let it = &self.items[ix];
+                        col = col.min(out.column_of(it.cell));
+                        span_cols += it.columns;
+                    }
                     let cell_span = span_cols.max(item.columns) as f32 * cell_w;
                     // Centre the cluster in its cell so the rounding slack is
                     // split evenly rather than pushed to one side.

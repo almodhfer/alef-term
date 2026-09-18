@@ -114,7 +114,7 @@ pub fn encode(
                 }
             }
             NamedKey::Escape => b"\x1b".to_vec(),
-            NamedKey::Space => b" ".to_vec(),
+            NamedKey::Space => if ctrl { vec![0] } else { b" ".to_vec() },
             NamedKey::ArrowUp => csi('A', None),
             NamedKey::ArrowDown => csi('B', None),
             NamedKey::ArrowRight => csi('C', None),
@@ -171,7 +171,8 @@ pub fn encode(
 
     // Alt acts as Meta: prefix with ESC. Named keys already carry the modifier
     // in their CSI parameter, so they are left alone.
-    if alt && !matches!(key, Key::Named(_)) {
+    if alt && (!matches!(key, Key::Named(_))
+        || matches!(key, Key::Named(NamedKey::Backspace | NamedKey::Enter | NamedKey::Space))) {
         let mut v = Vec::with_capacity(out.len() + 1);
         v.push(0x1b);
         v.extend_from_slice(&out);

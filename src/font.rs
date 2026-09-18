@@ -1,12 +1,38 @@
 //! Font loading, script-based fallback, and the rasterised glyph cache.
 //!
-//! Font bytes are intentionally leaked into `&'static [u8]`: fonts are loaded
-//! once at startup and live for the whole process, and a `'static` slice lets
+//! Font bytes are cached once per file into `&'static [u8]`: fonts live for
+//! the whole process, and a `'static` slice lets
 //! us cache the parsed `rustybuzz::Face` instead of re-parsing tables on every
 //! shaped run.
 
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
+
+/// Curated Arabic choices exposed in the command menu; fonts remain optional.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArabicFont { Naskh, Amiri, Scheherazade, Geeza }
+
+impl ArabicFont {
+    pub fn family(self) -> &'static str {
+        match self {
+            Self::Naskh => "Noto Naskh Arabic",
+            Self::Amiri => "Amiri",
+            Self::Scheherazade => "Scheherazade New",
+            Self::Geeza => "Geeza Pro",
+        }
+    }
+}
+
+fn font_data(path: &str) -> Result<&'static [u8]> {
+    use std::sync::{Mutex, OnceLock};
+    static FILES: OnceLock<Mutex<HashMap<String, &'static [u8]>>> = OnceLock::new();
+    let mut files = FILES.get_or_init(Default::default).lock().map_err(|_| anyhow!("font cache unavailable"))?;
+    if let Some(data) = files.get(path) { return Ok(data); }
+    let bytes = std::fs::read(path).map_err(|e| anyhow!("{path}: {e}"))?;
+    let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    files.insert(path.to_string(), data);
+    Ok(data)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Style {
@@ -40,14 +66,22 @@ pub struct Face {
     pub descent: f32,
     /// Advance of U+0020, in em units — the basis for the cell width.
     pub space_advance: f32,
+    /// Variable weight applied identically by shaping and rasterization.
+    pub weight: Option<f32>,
+    // Shaped sample extents/advance in em units, plus terminal column count.
+    ink_samples: Vec<(f32, f32, f32, usize)>,
 }
 
 impl Face {
-    fn load(path: &str, index: u32) -> Result<Face> {
-        let bytes = std::fs::read(path).map_err(|e| anyhow!("{path}: {e}"))?;
-        let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
-        let hb = rustybuzz::Face::from_slice(data, index)
+    fn load(path: &str, index: u32, style: Style) -> Result<Face> {
+        let data = font_data(path)?;
+        let mut hb = rustybuzz::Face::from_slice(data, index)
             .ok_or_else(|| anyhow!("{path}#{index}: not a usable face"))?;
+        let weight = hb.variation_axes().into_iter().find(|axis| axis.tag.to_bytes() == *b"wght")
+            .map(|axis| (if style.bold { 700.0f32 } else { 400.0f32 }).clamp(axis.min_value, axis.max_value));
+        if let Some(value) = weight {
+            hb.set_variations(&[rustybuzz::Variation { tag: rustybuzz::ttf_parser::Tag::from_bytes(b"wght"), value }]);
+        }
         let swash = swash::FontRef::from_index(data, index as usize)
             .ok_or_else(|| anyhow!("{path}#{index}: swash rejected the face"))?;
         let upem = hb.units_per_em() as f32;
@@ -64,6 +98,8 @@ impl Face {
             ascent: hb.ascender() as f32 / upem,
             descent: hb.descender() as f32 / upem,
             space_advance,
+            weight,
+            ink_samples: Vec::new(),
             hb,
         })
     }
@@ -139,6 +175,8 @@ impl PlanCache {
 
 pub struct Fonts {
     pub faces: Vec<Face>,
+    /// Actual Arabic family, so a missing requested font is never mislabeled.
+    pub arabic_family: String,
     pub plans: PlanCache,
     /// faces index by (slot, style).
     map: HashMap<(Slot, Style), usize>,
@@ -161,6 +199,8 @@ pub struct Fonts {
     /// Bumped whenever metrics change, so cached layouts can be invalidated.
     generation: u64,
     pub size_px: f32,
+    /// Multiplier on the line box shared by Latin and Arabic, at least 1.
+    line_height: f32,
     /// Cell metrics derived from the monospace face.
     pub cell_w: f32,
     pub cell_h: f32,
@@ -309,6 +349,7 @@ impl Fonts {
     ) -> Result<Fonts> {
         let mut faces = Vec::new();
         let mut map = HashMap::new();
+        let mut arabic_family = "Fallback".to_string();
 
         // Ask the platform what it has, rather than guessing at paths. This is
         // also what makes the font stack work off macOS.
@@ -338,7 +379,7 @@ impl Fonts {
                         continue;
                     }
                     let Some((path, idx)) = find_face(&db, family, style) else { continue };
-                    match Face::load(&path, idx) {
+                    match Face::load(&path, idx, style) {
                         Ok(f) => {
                             faces.push(f);
                             map.insert((*slot, style), faces.len() - 1);
@@ -349,6 +390,7 @@ impl Fonts {
                 // Once a family has supplied the regular face, stay with it for
                 // the remaining styles rather than mixing two designs.
                 if map.contains_key(&(*slot, Style::default())) {
+                    if *slot == Slot::Arabic { arabic_family = family.to_string(); }
                     break;
                 }
             }
@@ -361,7 +403,7 @@ impl Fonts {
             if !std::path::Path::new(path).exists() {
                 continue;
             }
-            if let Ok(f) = Face::load(path, *idx) {
+            if let Ok(f) = Face::load(path, *idx, Style::default()) {
                 faces.push(f);
                 map.insert((*slot, Style::default()), faces.len() - 1);
             }
@@ -371,10 +413,37 @@ impl Fonts {
             return Err(anyhow!("no usable monospace font found"));
         }
 
+        // Some book faces position stacked marks outside their advertised
+        // ascender/descender. Measure shaped ink in every Arabic style so those
+        // marks stay inside a row, including at the bottom of the viewport.
+        for style in STYLES {
+            if let Some(&id) = map.get(&(Slot::Arabic, style)) {
+                let face = &mut faces[id];
+                for word in "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ مُحَمَّدٌ سُبْحَانَ ضُوءٌ قُرْآنٌ إِنَّا أَعْطَيْنَاكَ فَصَلِّ".split_whitespace() {
+                    let mut buf = rustybuzz::UnicodeBuffer::new();
+                    buf.push_str(word);
+                    buf.set_direction(rustybuzz::Direction::RightToLeft);
+                    buf.set_script(rustybuzz::script::ARABIC);
+                    let shaped = rustybuzz::shape(&face.hb, &[], buf);
+                    let (mut up, mut down) = (0.0f32, 0.0f32);
+                    for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+                        if let Some(bounds) = face.hb.glyph_bounding_box(rustybuzz::ttf_parser::GlyphId(info.glyph_id as u16)) {
+                            up = up.max((bounds.y_max as f32 + pos.y_offset as f32) / face.upem);
+                            down = down.max(-(bounds.y_min as f32 + pos.y_offset as f32) / face.upem);
+                        }
+                    }
+                    let advance = shaped.glyph_positions().iter().map(|p| p.x_advance as f32).sum::<f32>() / face.upem;
+                    let cols = word.chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).sum();
+                    face.ink_samples.push((up, down, advance, cols));
+                }
+            }
+        }
+
         let scalers = (0..faces.len()).map(|_| swash::scale::ScaleContext::new()).collect();
         let auto = arabic_scale.is_none();
         let mut f = Fonts {
             faces,
+            arabic_family,
             plans: PlanCache::default(),
             map,
             table: [[0; 4]; SLOTS],
@@ -387,6 +456,7 @@ impl Fonts {
             auto_arabic_scale: auto,
             generation: 0,
             size_px,
+            line_height: 1.0,
             cell_w: 0.0,
             cell_h: 0.0,
             baseline: 0.0,
@@ -464,15 +534,33 @@ impl Fonts {
         // The Arabic face is drawn larger to match the Latin weight, so the
         // line box has to accommodate *its* extent too — otherwise tashkeel
         // above the letters clips into the row above.
-        if let Some(&ar) = self.map.get(&(Slot::Arabic, Style::default())) {
-            let apx = self.size_px * self.arabic_scale;
-            ascent = ascent.max(self.faces[ar].ascent * apx);
-            descent = descent.max(-self.faces[ar].descent * apx);
+        for style in STYLES {
+            if let Some(&ar) = self.map.get(&(Slot::Arabic, style)) {
+                let apx = self.size_px * self.arabic_scale;
+                ascent = ascent.max(self.faces[ar].ascent * apx);
+                descent = descent.max(-self.faces[ar].descent * apx);
+                for &(up, down, advance, cols) in &self.faces[ar].ink_samples {
+                    // Match the layout's isotropic fit for each word instead of
+                    // reserving full-size ink for words that render smaller.
+                    let fit = if advance > 0.0 { (cols as f32 * self.cell_w / (advance * apx)).min(1.0) } else { 1.0 };
+                    ascent = ascent.max(up * apx * fit);
+                    descent = descent.max(down * apx * fit);
+                }
+            }
         }
 
         let line = ascent + descent;
-        self.cell_h = (line * 1.06).round().max(1.0);
+        self.cell_h = (line * self.line_height).ceil().max(1.0);
         self.baseline = (ascent + (self.cell_h - line) * 0.5).round();
+    }
+
+    /// Change leading without stretching glyphs or clipping Arabic marks.
+    pub fn set_line_height(&mut self, height: f32) {
+        if height.is_finite() {
+            self.line_height = height.clamp(1.0, 2.0);
+            self.generation += 1;
+            self.recompute_metrics();
+        }
     }
 
     #[inline]
@@ -566,7 +654,8 @@ impl Fonts {
 
     fn render_uncached(&mut self, font: usize, glyph: u16, px: f32, subpx: f32) -> Option<RasterGlyph> {
         let swf = self.faces[font].swash();
-        let mut scaler = self.scalers[font].builder(swf).size(px).hint(true).build();
+        let variations = self.faces[font].weight.into_iter().map(|w| ("wght", w));
+        let mut scaler = self.scalers[font].builder(swf).size(px).hint(true).variations(variations).build();
         let img = swash::scale::Render::new(&[
             swash::scale::Source::ColorOutline(0),
             swash::scale::Source::ColorBitmap(swash::scale::StrikeWith::BestFit),

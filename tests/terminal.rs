@@ -192,13 +192,38 @@ fn pre_shaped_arabic_is_restored_to_base_letters() {
 }
 
 #[test]
+fn pre_shaped_hamza_and_madda_stay_single_letters() {
+    // Editors emit these contextual forms for إنشاء، الرئيسية، المؤشرات، آفاق.
+    // Their recursive decomposition includes a mark, not a second letter.
+    for (forms, base) in [
+        ("\u{FE81}\u{FE82}", 'آ'),
+        ("\u{FE83}\u{FE84}", 'أ'),
+        ("\u{FE85}\u{FE86}", 'ؤ'),
+        ("\u{FE87}\u{FE88}", 'إ'),
+        ("\u{FE89}\u{FE8A}\u{FE8B}\u{FE8C}", 'ئ'),
+        ("\u{FBA4}\u{FBA5}", 'ۀ'),
+        ("\u{FBB0}\u{FBB1}", 'ۓ'),
+    ] {
+        for form in forms.chars() {
+            let t = run(2, 20, &format!("x\x1b[32m{form}\u{0650}\x1b[0m!"));
+            assert_eq!(line(&t, 0), format!("x{base}\u{0650}!"), "U+{:04X}", form as u32);
+            assert_eq!(t.grid.screen.cursor.col, 3, "normalization must preserve editor columns");
+            assert_eq!(t.grid.screen.rows[0].cells[1].fg, Color::Indexed(2));
+            assert_eq!(t.grid.screen.rows[0].cells[1].marks(), &['\u{0650}']);
+        }
+    }
+}
+
+#[test]
 fn presentation_form_ligatures_are_left_intact() {
     // U+FEFB LAM WITH ALEF ISOLATED decomposes to two characters. Expanding it
     // would need a cell the writing program never reserved, so it stays as the
     // single glyph it already is.
-    let t = run(2, 20, "\u{FEFB}");
-    assert_eq!(line(&t, 0), "\u{FEFB}");
-    assert_eq!(t.grid.screen.cursor.col, 1);
+    for form in ['\u{FEFB}', '\u{FEF5}', '\u{FEF7}', '\u{FEF9}', '\u{FDF2}'] {
+        let t = run(2, 20, &format!("{form}!"));
+        assert_eq!(line(&t, 0), format!("{form}!"));
+        assert_eq!(t.grid.screen.cursor.col, 2);
+    }
 }
 
 #[test]

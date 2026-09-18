@@ -160,8 +160,10 @@ pub fn draw(canvas: &mut impl Target, c: char, x: f32, y: f32, w: f32, h: f32, f
 
     let Some(arm) = arms(c) else { return };
 
-    // Stroke thickness scales with the cell so it stays visible when zoomed.
-    let light = (h / 14.0).round().max(1.0);
+    // Match the monospace pitch, not the enlarged Arabic line box. Deriving
+    // this from height made light borders look bold and made extra leading
+    // change the stroke weight of every TUI on screen.
+    let light = (w / 9.0).round().max(1.0);
     let heavy = (light * 2.0).max(2.0);
     let thick = |weight: u8| -> f32 {
         match weight {

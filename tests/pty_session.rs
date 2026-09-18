@@ -114,7 +114,10 @@ fn editor_pre_shaped_arabic_arrives_as_base_letters() {
     let dir = std::env::temp_dir().join("arabic-term-test");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("ar.txt");
-    std::fs::write(&file, "مرحبا بالعالم\n").unwrap();
+    std::fs::write(&file, concat!(
+        "مرحبا بالعالم\n",
+        "إنشاء الرئيسية المؤشرات أفضل آفاق README مكتمل\n",
+    )).unwrap();
 
     let mut term = Terminal::new(24, 80, 100);
     let mut vt = Vt::new();
@@ -122,12 +125,15 @@ fn editor_pre_shaped_arabic_arrives_as_base_letters() {
     pty.write(format!("{nvim} -u NONE {}\n", file.display()).as_bytes());
 
     let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(20), |t| {
-        t.grid.in_alt() && screen(t).contains("مرحبا")
+        t.grid.in_alt() && screen(t).contains("مكتمل")
     });
     pty.write(b"\x1b:q!\n");
     pty.kill();
 
     assert!(ok, "editor output never arrived as base letters; screen was:\n{}", screen(&term));
+    for word in ["مرحبا", "إنشاء", "الرئيسية", "المؤشرات", "أفضل", "آفاق", "README"] {
+        assert!(screen(&term).contains(word), "{word} was corrupted in editor output:\n{}", screen(&term));
+    }
     // And explicitly: no Arabic Presentation Forms survived into the grid.
     let has_forms = screen(&term)
         .chars()

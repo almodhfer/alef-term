@@ -7,6 +7,36 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+
+fn pty_size(rows: u16, cols: u16, cell_w: u16, cell_h: u16) -> PtySize {
+    PtySize { rows, cols, pixel_width: cols.saturating_mul(cell_w), pixel_height: rows.saturating_mul(cell_h) }
+}
+
+/// Finder/Dock launches inherit `/`; use home instead of a surprising root shell.
+pub fn start_directory(requested: Option<&Path>, current: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    requested.filter(|p| p.is_dir())
+        .or_else(|| current.filter(|p| *p != Path::new("/") && p.is_dir()))
+        .or_else(|| home.filter(|p| p.is_dir()))
+        .or_else(|| current.filter(|p| p.is_dir()))
+        .map(Path::to_path_buf)
+}
+
+/// Do not inherit an absent or unsupported C.UTF-8 locale on macOS. An
+/// explicit, supported locale remains the user's choice, including LC_ALL=C.
+pub fn configure_locale(cmd: &mut CommandBuilder) {
+    let effective = ["LC_ALL", "LC_CTYPE", "LANG"].into_iter()
+        .find_map(|key| cmd.get_env(key).and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty()).map(|s| (key, s.to_string())));
+    let fallback = if cfg!(target_os = "macos") { "en_US.UTF-8" } else { "C.UTF-8" };
+    match effective {
+        Some((key, value)) if cfg!(target_os = "macos")
+            && value.to_ascii_lowercase().replace('-', "") == "c.utf8" => { cmd.env(key, fallback); }
+        None => { cmd.env("LC_CTYPE", fallback); }
+        Some(("LANG", value)) if value == "C" || value == "POSIX" => { cmd.env("LC_CTYPE", fallback); }
+        _ => {}
+    }
+}
 
 #[derive(Default, Debug)]
 pub struct DrainResult {
@@ -47,7 +77,7 @@ pub struct Pty {
     writer: Sender<Vec<u8>>,
     pub rx: Receiver<PtyEvent>,
     wake_pending: Arc<AtomicBool>,
-    child: Arc<Mutex<Box<dyn portable_pty::Child + Send + Sync>>>,
+    child: Mutex<Option<Box<dyn portable_pty::Child + Send + Sync>>>,
 }
 
 impl Pty {
@@ -64,12 +94,7 @@ impl Pty {
         wake: impl Fn() + Send + 'static,
     ) -> Result<Pty> {
         let sys = native_pty_system();
-        let pair = sys.openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: cols * cell_w,
-            pixel_height: rows * cell_h,
-        })?;
+        let pair = sys.openpty(pty_size(rows, cols, cell_w, cell_h))?;
 
         let login = program.is_none();
         let shell = match program {
@@ -83,15 +108,14 @@ impl Pty {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "arabic-term");
+        configure_locale(&mut cmd);
         // Start where asked (a new window inherits its parent's directory),
         // else where we were started.
-        match cwd.filter(|d| std::path::Path::new(d).is_dir()) {
-            Some(dir) => cmd.cwd(dir),
-            None => {
-                if let Ok(here) = std::env::current_dir() {
-                    cmd.cwd(here);
-                }
-            }
+        let here = std::env::current_dir().ok();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if let Some(dir) = start_directory(cwd.map(Path::new), here.as_deref(), home.as_deref()) {
+            log::debug!("starting shell {shell} in {}", dir.display());
+            cmd.cwd(dir);
         }
 
         let child = pair.slave.spawn_command(cmd)?;
@@ -142,7 +166,7 @@ impl Pty {
             }
         })?;
 
-        Ok(Pty { master: pair.master, writer: input_tx, rx, wake_pending, child: Arc::new(Mutex::new(child)) })
+        Ok(Pty { master: pair.master, writer: input_tx, rx, wake_pending, child: Mutex::new(Some(child)) })
     }
 
     /// Acknowledge before draining: output arriving after this point queues a
@@ -165,17 +189,19 @@ impl Pty {
     }
 
     pub fn resize(&self, rows: u16, cols: u16, cell_w: u16, cell_h: u16) {
-        let _ = self.master.resize(PtySize {
-            rows,
-            cols,
-            pixel_width: cols * cell_w,
-            pixel_height: rows * cell_h,
-        });
+        if let Err(e) = self.master.resize(pty_size(rows, cols, cell_w, cell_h)) {
+            log::warn!("could not resize the PTY: {e}");
+        }
     }
 
     pub fn kill(&self) {
-        if let Ok(mut c) = self.child.lock() {
-            let _ = c.kill();
+        if let Some(mut child) = self.child.lock().ok().and_then(|mut child| child.take()) {
+            // Child::kill may wait for a grace period; keep that off the UI
+            // thread. Always wait afterwards so closed windows leave no zombies.
+            std::thread::spawn(move || {
+                let _ = child.kill();
+                if let Err(e) = child.wait() { log::debug!("waiting for shell exit: {e}"); }
+            });
         }
     }
 }
@@ -183,6 +209,13 @@ impl Pty {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_font_pixel_dimensions_saturate_instead_of_overflowing() {
+        let size = pty_size(1000, 1000, 200, 250);
+        assert_eq!((size.rows, size.cols), (1000, 1000));
+        assert_eq!((size.pixel_width, size.pixel_height), (u16::MAX, u16::MAX));
+    }
 
     #[test]
     fn output_flood_yields_and_resumes_without_losing_bytes_or_exit() {

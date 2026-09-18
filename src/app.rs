@@ -1,6 +1,7 @@
 //! Window, input handling, and the frame loop.
 
 use crate::font::Fonts;
+use crate::commands::{Action, CommandPalette};
 use crate::frame::FramePacer;
 use crate::pty::Pty;
 use crate::gpu::Gpu;
@@ -43,6 +44,17 @@ pub struct Config {
     pub font_size: f32,
     /// `None` derives the Arabic scale from font metrics.
     pub arabic_scale: Option<f32>,
+    pub line_height: f32,
+    /// Insets in logical pixels, scaled with the display's backing scale.
+    pub padding_x: f32,
+    pub padding_y: f32,
+    pub bidi_mode: BidiMode,
+    pub copy_on_select: bool,
+    pub minimum_contrast: f32,
+    pub working_directory: Option<String>,
+    /// Reapplied after reading the file on an explicit settings reload.
+    pub cli_overrides: crate::config::File,
+    pub startup_warning: Option<String>,
     pub scrollback: usize,
     pub cols: usize,
     pub rows: usize,
@@ -86,6 +98,15 @@ impl Default for Config {
             arabic_font: None,
             font_size: 15.0,
             arabic_scale: None,
+            line_height: 1.0,
+            padding_x: 12.0,
+            padding_y: 10.0,
+            bidi_mode: BidiMode::default(),
+            copy_on_select: false,
+            minimum_contrast: 4.5,
+            working_directory: None,
+            cli_overrides: Default::default(),
+            startup_warning: None,
             scrollback: 10_000,
             cols: 96,
             rows: 28,
@@ -132,15 +153,25 @@ fn window_theme(p: &crate::color::Palette) -> winit::window::Theme {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Request {
     NewWindow,
+    NewTab,
     Close,
     Quit,
     /// Switch every window to the named theme, and remember it.
     SetTheme(&'static str),
+    SetArabicFont(crate::font::ArabicFont),
+    Reload,
 }
 
 /// One window: its terminal, shell, fonts and everything drawn in it.
 pub struct Pane {
     cfg: Config,
+    base_font_size: f32,
+    tab_group: String,
+    session_title: String,
+    occluded: bool,
+    mouse_bypass: bool,
+    commands: Option<CommandPalette>,
+    notice: Option<(String, std::time::Instant)>,
     /// Directory the shell starts in, for windows opened from another.
     start_dir: Option<String>,
     request: Option<Request>,
@@ -265,15 +296,28 @@ impl Profile {
 
 impl Pane {
     pub fn new(cfg: Config, proxy: EventLoopProxy<Wake>, start_dir: Option<String>) -> anyhow::Result<Pane> {
-        let fonts = Fonts::with_families(
+        let mut fonts = Fonts::with_families(
             cfg.font_size,
             cfg.arabic_scale,
             cfg.font.as_deref(),
             cfg.arabic_font.as_deref(),
         )?;
+        fonts.set_line_height(cfg.line_height);
+        let mut renderer = Renderer::new();
+        renderer.pad_x = cfg.padding_x;
+        renderer.pad_y = cfg.padding_y;
+        renderer.minimum_contrast = cfg.minimum_contrast;
         let mut term = Terminal::new(cfg.rows, cfg.cols, cfg.scrollback);
         term.set_palette(cfg.palette.clone());
+        term.bidi_mode = cfg.bidi_mode;
         Ok(Pane {
+            base_font_size: cfg.font_size,
+            tab_group: String::new(),
+            occluded: false,
+            mouse_bypass: false,
+            commands: None,
+            notice: cfg.startup_warning.as_ref().map(|text| (text.clone(), std::time::Instant::now() + std::time::Duration::from_secs(10))),
+            session_title: "arabic-term".into(),
             cfg,
             start_dir,
             request: None,
@@ -284,7 +328,7 @@ impl Pane {
             vt: Vt::new(),
             pty: None,
             fonts,
-            renderer: Renderer::new(),
+            renderer,
             proxy,
             modifiers: ModifiersState::empty(),
             scale: 1.0,
@@ -327,7 +371,7 @@ impl Pane {
     /// the live screen where the cursor is drawn at all.
     fn blinking(&self) -> bool {
         self.term.cursor_style.blink.unwrap_or(self.cfg.cursor_blink)
-            && self.focused
+            && self.focused && !self.occluded
             && self.term.modes.contains(Modes::CURSOR_VISIBLE)
             && self.term.grid.view_offset == 0
     }
@@ -363,6 +407,7 @@ impl Pane {
 
     /// Open the theme picker on the theme in use.
     fn picker_open(&mut self) {
+        self.commands = None;
         self.search = None;
         self.picker = Some(ThemePicker::new(self.cfg.theme));
         self.needs_redraw = true;
@@ -406,7 +451,7 @@ impl Pane {
             Key::Named(NamedKey::Tab) => picker.step(if shift { -1 } else { 1 }),
             Key::Named(NamedKey::Backspace) => picker.pop(sup),
             // The key that opened it closes it.
-            Key::Character(c) if sup && c.eq_ignore_ascii_case("t") => {
+            Key::Character(c) if sup && shift && c.eq_ignore_ascii_case("t") => {
                 self.picker_cancel();
                 return true;
             }
@@ -424,11 +469,50 @@ impl Pane {
         true
     }
 
+    fn apply_arabic_font(&mut self, family: &str, mut fonts: Fonts) {
+        self.cfg.arabic_font = Some(family.to_string());
+        fonts.set_line_height(self.cfg.line_height);
+        self.fonts = fonts;
+        self.renderer.invalidate_layouts();
+        self.atlas_generation = u64::MAX;
+        self.selection = None;
+        self.search = None;
+        self.reflow();
+        self.notify(format!("Arabic font: {family}"));
+    }
+
     /// Switch to `t` for good: this window's colours, and what it restores
     /// when a program resets them.
     fn apply_theme(&mut self, t: &'static Theme) {
         self.cfg.set_theme(t);
         self.show_palette(self.cfg.palette.clone());
+    }
+
+    fn apply_config(&mut self, cfg: &Config, fonts: Option<Fonts>) {
+        self.picker = None;
+        self.commands = None;
+        self.selection = None;
+        self.search = None;
+        if let Some(fonts) = fonts { self.fonts = fonts; }
+        self.fonts.set_line_height(cfg.line_height);
+        self.base_font_size = cfg.font_size;
+        let renderer_changed = self.cfg.software != cfg.software;
+        self.cfg = cfg.clone();
+        self.set_display_scale(self.scale);
+        self.renderer.invalidate_layouts();
+        self.renderer.minimum_contrast = cfg.minimum_contrast;
+        self.atlas_generation = u64::MAX;
+        self.term.bidi_mode = cfg.bidi_mode;
+        self.term.grid.max_scrollback = cfg.scrollback;
+        let excess = self.term.grid.scrollback.len().saturating_sub(cfg.scrollback);
+        self.term.grid.scrollback.drain(..excess);
+        self.scroll_to(self.scroll.pos.min(self.scroll_max()));
+        self.epoch += 1;
+        self.show_palette(cfg.palette.clone());
+        self.reflow();
+        self.notify(if renderer_changed {
+            "Settings reloaded; renderer changes apply to new windows"
+        } else { "Settings reloaded" });
     }
 
     /// Draw with `p` from the next frame, title bar included.
@@ -448,6 +532,7 @@ impl Pane {
 
     /// Open the search bar, seeded with a one-line selection if there is one.
     fn search_open(&mut self) {
+        self.commands = None;
         self.picker_cancel();
         let seed = self
             .selection
@@ -782,25 +867,131 @@ impl Pane {
     }
 
     fn paste(&mut self, text: &str) {
-        let bracketed = self.term.modes.contains(Modes::BRACKETED_PASTE);
-        // Strip control characters that could inject commands from a paste.
-        let cleaned: String =
-            text.chars().filter(|c| *c == '\t' || *c == '\n' || !c.is_control()).collect();
-        let mut buf = Vec::new();
-        if bracketed {
-            buf.extend_from_slice(b"\x1b[200~");
+        if let Some(commands) = &mut self.commands {
+            commands.push(text);
+            self.needs_redraw = true;
+        } else if let Some(picker) = &mut self.picker {
+            picker.push(&text.chars().filter(|c| !c.is_control()).collect::<String>());
+            self.picker_preview();
+        } else if let Some(search) = &mut self.search {
+            search.query.extend(text.chars().filter(|c| !c.is_control()));
+            self.search_run(true);
+        } else {
+            let bytes = crate::input::paste_bytes(text, self.term.modes.contains(Modes::BRACKETED_PASTE));
+            if !bytes.is_empty() { self.send(&bytes); }
         }
-        buf.extend_from_slice(cleaned.replace('\n', "\r").as_bytes());
-        if bracketed {
-            buf.extend_from_slice(b"\x1b[201~");
+    }
+
+    fn notify(&mut self, text: impl Into<String>) {
+        self.notice = Some((text.into(), std::time::Instant::now() + std::time::Duration::from_secs(4)));
+        self.needs_redraw = true;
+    }
+
+    fn command_open(&mut self) {
+        self.picker_cancel();
+        self.search = None;
+        self.commands = if self.commands.is_some() { None } else { Some(CommandPalette::default()) };
+        self.needs_redraw = true;
+    }
+
+    fn command_key(&mut self, key: &Key, text: Option<&str>) -> bool {
+        let Some(commands) = &mut self.commands else { return false };
+        match key {
+            Key::Named(NamedKey::Escape) => self.commands = None,
+            Key::Named(NamedKey::Enter) => {
+                if let Some(action) = commands.current() {
+                    self.commands = None;
+                    self.perform_action(action);
+                }
+            }
+            Key::Named(NamedKey::ArrowUp) => commands.step(-1),
+            Key::Named(NamedKey::ArrowDown) => commands.step(1),
+            Key::Named(NamedKey::Tab) => commands.step(if self.modifiers.shift_key() { -1 } else { 1 }),
+            Key::Named(NamedKey::Backspace) => commands.backspace(self.modifiers.super_key()),
+            _ if self.modifiers.super_key() => return false,
+            _ => if let Some(text) = text { commands.push(text); },
         }
-        self.send(&buf);
+        self.needs_redraw = true;
+        true
+    }
+
+    fn perform_action(&mut self, action: Action) {
+        match action {
+            Action::NewTab => self.request = Some(Request::NewTab),
+            Action::NextTab | Action::PreviousTab => {
+                #[cfg(target_os = "macos")]
+                if let Some(window) = &self.window {
+                    use winit::platform::macos::WindowExtMacOS;
+                    if action == Action::NextTab { window.select_next_tab(); }
+                    else { window.select_previous_tab(); }
+                }
+            }
+            Action::NewWindow => self.request = Some(Request::NewWindow),
+            Action::Search => self.search_open(),
+            Action::Theme => self.picker_open(),
+            Action::ArabicFonts => {
+                self.picker_cancel();
+                self.search = None;
+                let mut commands = CommandPalette::default();
+                commands.push("Arabic font");
+                self.commands = Some(commands);
+            }
+            Action::ArabicFont(font) => self.request = Some(Request::SetArabicFont(font)),
+            Action::Reload => self.request = Some(Request::Reload),
+            Action::Copy => {
+                let text = self.selection.map(|s| selected_text(&self.term, s)).unwrap_or_default();
+                if !text.is_empty() {
+                    if self.clipboard.as_mut().is_none_or(|cb| cb.set_text(text).is_err()) {
+                        self.notify("Could not copy to the clipboard");
+                    }
+                }
+            }
+            Action::Paste => {
+                if let Some(text) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
+                    self.paste(&text);
+                } else { self.notify("No text is available on the clipboard"); }
+            }
+            Action::SelectAll => {
+                let start = if self.term.grid.in_alt() { self.term.grid.scrollback.len() } else { 0 };
+                let end = self.term.grid.scrollback.len() + self.term.grid.rows - 1;
+                self.selection = Some(Selection { start: (start, 0), end: (end, self.term.grid.cols - 1), block: false });
+            }
+            Action::ClearHistory => {
+                self.term.grid.scrollback.clear();
+                self.selection = None;
+                self.search = None;
+                self.scroll_to(0.0);
+                self.term.prune_images();
+                self.epoch += 1;
+                self.notify("Scrollback cleared");
+            }
+            Action::ZoomIn => self.set_font_size(self.cfg.font_size + 1.0),
+            Action::ZoomOut => self.set_font_size(self.cfg.font_size - 1.0),
+            Action::ZoomReset => self.set_font_size(self.base_font_size),
+            Action::DirectionAuto | Action::DirectionLtr | Action::DirectionRtl => {
+                let (mode, label) = match action {
+                    Action::DirectionAuto => (BidiMode::Auto, "Text direction: automatic"),
+                    Action::DirectionLtr => (BidiMode::ForceLtr, "Text direction: left to right"),
+                    _ => (BidiMode::ForceRtl, "Text direction: right to left"),
+                };
+                self.term.bidi_mode = mode;
+                self.notify(label);
+            }
+        }
+        self.needs_redraw = true;
     }
 
     fn set_font_size(&mut self, size: f32) {
         self.cfg.font_size = size.clamp(6.0, 72.0);
         self.fonts.set_size(self.cfg.font_size * self.scale);
         self.reflow();
+    }
+
+    fn set_display_scale(&mut self, scale: f32) {
+        self.scale = scale;
+        self.fonts.set_size(self.cfg.font_size * scale);
+        self.renderer.pad_x = (self.cfg.padding_x * scale).round();
+        self.renderer.pad_y = (self.cfg.padding_y * scale).round();
     }
 
     /// True when an application has asked to receive mouse events.
@@ -863,17 +1054,27 @@ impl Pane {
         }
         let (cw, ch) = self.cell_size();
         let attrs = Window::default_attributes()
-            .with_title("arabic-term")
+            .with_title(&self.session_title)
             .with_theme(Some(window_theme(&self.cfg.palette)))
             .with_inner_size(LogicalSize::new(
-                self.cfg.cols as f32 * cw,
-                self.cfg.rows as f32 * ch,
+                self.cfg.cols as f32 * cw + 2.0 * self.cfg.padding_x,
+                self.cfg.rows as f32 * ch + 2.0 * self.cfg.padding_y,
             ));
+        #[cfg(target_os = "macos")]
+        let attrs = {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs.with_tabbing_identifier(&self.tab_group)
+        };
         let win = Arc::new(el.create_window(attrs).expect("create window"));
         win.set_ime_allowed(true); // needed for Arabic input methods
 
-        self.scale = win.scale_factor() as f32;
-        self.fonts.set_size(self.cfg.font_size * self.scale);
+        self.set_display_scale(win.scale_factor() as f32);
+        // Recompute the initial size from the physical font metrics: rounding
+        // at Retina scale need not be twice the rounding at logical scale.
+        let _ = win.request_inner_size(winit::dpi::PhysicalSize::new(
+            (self.cfg.cols as f32 * self.fonts.cell_w + 2.0 * self.renderer.pad_x) as u32,
+            (self.cfg.rows as f32 * self.fonts.cell_h + 2.0 * self.renderer.pad_y) as u32,
+        ));
 
         let gpu = if self.cfg.software {
             None
@@ -928,6 +1129,10 @@ impl Pane {
             WindowEvent::CloseRequested => {
                 self.request = Some(Request::Close);
             }
+            WindowEvent::Occluded(hidden) => {
+                self.occluded = hidden;
+                if !hidden { self.needs_redraw = true; }
+            }
             WindowEvent::Focused(f) => {
                 self.focused = f;
                 if self.term.modes.contains(Modes::FOCUS_EVENTS) {
@@ -936,8 +1141,7 @@ impl Pane {
                 self.needs_redraw = true;
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.scale = scale_factor as f32;
-                self.fonts.set_size(self.cfg.font_size * self.scale);
+                self.set_display_scale(scale_factor as f32);
                 self.reflow();
             }
             WindowEvent::Resized(_) => self.reflow(),
@@ -951,7 +1155,10 @@ impl Pane {
                 self.update_hover();
             }
             WindowEvent::Ime(winit::event::Ime::Commit(s)) => {
-                if let Some(picker) = &mut self.picker {
+                if let Some(commands) = &mut self.commands {
+                    commands.push(&s);
+                    self.needs_redraw = true;
+                } else if let Some(picker) = &mut self.picker {
                     picker.push(&s);
                     self.picker_preview();
                 } else if let Some(search) = &mut self.search {
@@ -966,79 +1173,51 @@ impl Pane {
                     return;
                 }
                 self.blink_reset();
-                if self.picker.is_some() && self.picker_key(&event.logical_key, event.text.as_deref()) {
+                let key = if self.modifiers.super_key() {
+                    crate::input::command_key(&event.logical_key, event.physical_key)
+                } else { event.logical_key.clone() };
+                if self.commands.is_some() && self.command_key(&key, event.text.as_deref()) { return; }
+                if self.picker.is_some() && self.picker_key(&key, event.text.as_deref()) {
                     return;
                 }
-                if self.search.is_some() && self.search_key(&event.logical_key, event.text.as_deref()) {
+                if self.search.is_some() && self.search_key(&key, event.text.as_deref()) {
                     return;
                 }
                 let sup = self.modifiers.super_key();
                 if sup {
-                    // macOS command bindings.
-                    if let Key::Character(c) = &event.logical_key {
-                        match c.as_str() {
-                            "f" => {
-                                self.search_open();
-                                return;
-                            }
-                            "t" | "T" if self.modifiers.shift_key() => {
-                                self.picker_open();
-                                return;
-                            }
-                            "n" => {
-                                self.request = Some(Request::NewWindow);
-                                return;
-                            }
-                            "w" => {
-                                self.request = Some(Request::Close);
-                                return;
-                            }
-                            "q" => {
-                                self.request = Some(Request::Quit);
-                                return;
-                            }
-                            "c" => {
-                                let t = self.selection.map(|s| selected_text(&self.term, s)).unwrap_or_default();
-                                if !t.is_empty() {
-                                    if let Some(cb) = &mut self.clipboard {
-                                        let _ = cb.set_text(t);
-                                    }
+                    if let Key::Character(c) = &key {
+                        let action = match c.as_str() {
+                            "p" if self.modifiers.shift_key() => { self.command_open(); return; }
+                            "r" if self.modifiers.shift_key() => Some(Action::Reload),
+                            "t" if self.modifiers.shift_key() => Some(Action::Theme),
+                            "f" if self.modifiers.shift_key() => Some(Action::ArabicFonts),
+                            "t" => Some(Action::NewTab),
+                            "]" | "}" if self.modifiers.shift_key() => Some(Action::NextTab),
+                            "[" | "{" if self.modifiers.shift_key() => Some(Action::PreviousTab),
+                            digit @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") => {
+                                #[cfg(target_os = "macos")]
+                                if let Some(window) = &self.window {
+                                    use winit::platform::macos::WindowExtMacOS;
+                                    let index = digit.parse::<usize>().unwrap() - 1;
+                                    window.select_tab_at_index(if index == 8 { window.num_tabs().saturating_sub(1) } else { index });
                                 }
-                                return;
+                                None
                             }
-                            "v" => {
-                                let text =
-                                    self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
-                                if let Some(t) = text {
-                                    self.paste(&t);
-                                }
-                                return;
-                            }
-                            "+" | "=" => {
-                                self.set_font_size(self.cfg.font_size + 1.0);
-                                return;
-                            }
-                            "-" => {
-                                self.set_font_size(self.cfg.font_size - 1.0);
-                                return;
-                            }
-                            "0" => {
-                                self.set_font_size(15.0);
-                                return;
-                            }
-                            // Cycle the base-direction policy: useful when a
-                            // program's output guesses wrong.
-                            "r" => {
-                                self.term.bidi_mode = match self.term.bidi_mode {
-                                    BidiMode::ForceLtr => BidiMode::ForceRtl,
-                                    BidiMode::ForceRtl => BidiMode::Auto,
-                                    BidiMode::Auto => BidiMode::ForceLtr,
-                                };
-                                self.needs_redraw = true;
-                                return;
-                            }
-                            _ => {}
-                        }
+                            "f" => Some(Action::Search), "n" => Some(Action::NewWindow),
+                            "c" => Some(Action::Copy), "v" => Some(Action::Paste),
+                            "a" => Some(Action::SelectAll), "k" => Some(Action::ClearHistory),
+                            "+" | "=" => Some(Action::ZoomIn), "-" => Some(Action::ZoomOut),
+                            "0" => Some(Action::ZoomReset),
+                            "r" => Some(match self.term.bidi_mode {
+                                BidiMode::Auto => Action::DirectionLtr,
+                                BidiMode::ForceLtr => Action::DirectionRtl,
+                                BidiMode::ForceRtl => Action::DirectionAuto,
+                            }),
+                            "w" => { self.request = Some(Request::Close); None }
+                            "q" => { self.request = Some(Request::Quit); None }
+                            _ => None,
+                        };
+                        if let Some(action) = action { self.perform_action(action); }
                     }
                     return;
                 }
@@ -1081,7 +1260,14 @@ impl Pane {
                     }
                 }
             }
+            WindowEvent::DroppedFile(path) => {
+                if let Some(quoted) = crate::input::quoted_path(&path) { self.paste(&quoted); }
+                else { self.notify("This path contains unsupported characters"); }
+            }
             WindowEvent::MouseInput { state, button, .. } => {
+                if self.commands.is_some() || self.picker.is_some() { return; }
+                let bypass = self.mouse_bypass || self.modifiers.shift_key();
+                self.mouse_bypass = state == ElementState::Pressed && bypass;
                 let at = self.mouse_at;
                 let btn = match button {
                     MouseButton::Left => 0,
@@ -1094,7 +1280,7 @@ impl Pane {
                 } else {
                     self.mouse_held = None;
                 }
-                if self.mouse_grabbed() {
+                if self.mouse_grabbed() && !bypass {
                     self.mouse_report(btn, state == ElementState::Pressed, at.row, at.cell);
                     return;
                 }
@@ -1138,7 +1324,7 @@ impl Pane {
                     (MouseButton::Left, ElementState::Released) => {
                         self.selecting = false;
                         let t = self.selection.map(|s| selected_text(&self.term, s)).unwrap_or_default();
-                        if !t.is_empty() {
+                        if self.cfg.copy_on_select && !t.is_empty() {
                             if let Some(cb) = &mut self.clipboard {
                                 let _ = cb.set_text(t);
                             }
@@ -1154,11 +1340,12 @@ impl Pane {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                if self.commands.is_some() || self.picker.is_some() { return; }
                 let hit = self.hit_test(position);
                 if hit != self.mouse_at {
                     self.mouse_at = hit;
                     self.update_hover();
-                    if self.mouse_grabbed() {
+                    if self.mouse_grabbed() && !self.mouse_bypass && !self.modifiers.shift_key() {
                         // Viewport row, not absolute line.
                         self.motion_report(hit.row, hit.cell);
                         return;
@@ -1172,6 +1359,7 @@ impl Pane {
                 }
             }
             WindowEvent::MouseWheel { delta, phase, .. } => {
+                if self.commands.is_some() || self.picker.is_some() { return; }
                 // A gesture starting fresh must not inherit a stale remainder.
                 if phase == TouchPhase::Started {
                     self.wheel_remainder = 0.0;
@@ -1305,6 +1493,8 @@ impl Pane {
                     current: self.search.as_ref().map_or(&[], |s| s.current_spans()),
                     search: bar,
                     picker,
+                    commands: self.commands.as_ref(),
+                    notice: self.notice.as_ref().map(|(text, _)| text.as_str()),
                 };
                 let t2;
                 match output {
@@ -1350,8 +1540,9 @@ impl Pane {
                     p.record([t1 - t0, t2 - t1, t3 - t2]);
                 }
 
-                if win.title() != self.term.title {
-                    win.set_title(&self.term.title);
+                let title = if self.term.title == "arabic-term" { &self.session_title } else { &self.term.title };
+                if win.title() != *title {
+                    win.set_title(title);
                 }
             }
             _ => {}
@@ -1372,14 +1563,19 @@ impl Pane {
             || (self.scroll.target - self.scroll.pos).abs() > 0.01
             || self.renderer.scrollbar_alpha > 0.01 && self.scroll.at_bottom();
         let now = std::time::Instant::now();
-        let mut deadline = None;
+        let mut deadline = self.notice.as_ref().map(|(_, until)| *until);
+        if deadline.is_some_and(|until| now >= until) {
+            self.notice = None;
+            self.needs_redraw = true;
+            deadline = None;
+        }
         if self.blinking() {
             if now >= self.blink_at {
                 self.blink_on = !self.blink_on;
                 self.blink_at = now + BLINK_HALF;
                 self.needs_redraw = true;
             }
-            deadline = Some(self.blink_at);
+            deadline = Some(deadline.map_or(self.blink_at, |d| d.min(self.blink_at)));
         } else if !self.blink_on {
             self.blink_on = true;
             self.needs_redraw = true;
@@ -1389,13 +1585,13 @@ impl Pane {
             self.bell_at = None;
         }
         let animating = animating || bell_active;
-        if self.needs_redraw || animating {
+        if (self.needs_redraw || animating) && !self.occluded {
             if let Some(w) = &self.window {
                 let due = self.frames.deadline(now, self.refresh_millihertz);
                 if due <= now {
                     w.request_redraw();
                 } else {
-                    deadline = Some(due);
+                    deadline = Some(deadline.map_or(due, |d| d.min(due)));
                 }
             }
         }
@@ -1421,18 +1617,70 @@ pub struct App {
     cfg: Config,
     proxy: EventLoopProxy<Wake>,
     panes: Vec<Pane>,
+    next_group: u64,
+    next_session: u64,
 }
 
 impl App {
+    fn reload_settings(&mut self) -> anyhow::Result<()> {
+        let cfg = crate::config::reload(&self.cfg)?;
+        // Prepare every fallible part before changing any running window.
+        let fonts = self.panes.iter().map(|pane| {
+            if pane.cfg.font != cfg.font || pane.cfg.arabic_font != cfg.arabic_font
+                || pane.cfg.arabic_scale != cfg.arabic_scale {
+                Fonts::with_families(cfg.font_size * pane.scale, cfg.arabic_scale,
+                    cfg.font.as_deref(), cfg.arabic_font.as_deref()).map(Some)
+            } else { Ok(None) }
+        }).collect::<anyhow::Result<Vec<_>>>()?;
+        for (pane, fonts) in self.panes.iter_mut().zip(fonts) { pane.apply_config(&cfg, fonts); }
+        self.cfg = cfg;
+        Ok(())
+    }
+
+    fn set_arabic_font(&mut self, choice: crate::font::ArabicFont) -> anyhow::Result<()> {
+        let family = choice.family();
+        let fonts = self.panes.iter().map(|pane| {
+            let fonts = Fonts::with_families(pane.cfg.font_size * pane.scale,
+                pane.cfg.arabic_scale, pane.cfg.font.as_deref(), Some(family))?;
+            if fonts.arabic_family != family {
+                return Err(anyhow::anyhow!("{family} is not installed"));
+            }
+            Ok(fonts)
+        }).collect::<anyhow::Result<Vec<_>>>()?;
+        self.cfg.arabic_font = Some(family.to_string());
+        for (pane, fonts) in self.panes.iter_mut().zip(fonts) {
+            pane.apply_arabic_font(family, fonts);
+        }
+        if let Some(path) = &self.cfg.config_path {
+            if let Err(error) = crate::config::save_arabic_font(path, family) {
+                log::warn!("could not save Arabic font: {error:#}");
+                for pane in &mut self.panes { pane.notify(format!("{family} active; could not save settings")); }
+            }
+        }
+        Ok(())
+    }
+
     pub fn new(cfg: Config, proxy: EventLoopProxy<Wake>) -> anyhow::Result<App> {
         // Fail early on what every pane needs, before the event loop starts.
         Fonts::with_families(cfg.font_size, cfg.arabic_scale, cfg.font.as_deref(), cfg.arabic_font.as_deref())?;
-        Ok(App { cfg, proxy, panes: Vec::new() })
+        Ok(App { cfg, proxy, panes: Vec::new(), next_group: 0, next_session: 0 })
     }
 
-    fn open_pane(&mut self, el: &ActiveEventLoop, start_dir: Option<String>) {
-        match Pane::new(self.cfg.clone(), self.proxy.clone(), start_dir) {
+    fn open_pane(&mut self, el: &ActiveEventLoop, start_dir: Option<String>, tab_group: Option<String>) {
+        let group = tab_group.unwrap_or_else(|| {
+            self.next_group += 1;
+            format!("arabic-term-{}-{}", std::process::id(), self.next_group)
+        });
+        let mut cfg = self.cfg.clone();
+        // A startup command belongs to the first window only.
+        cfg.startup_cmd = self.cfg.startup_cmd.take();
+        cfg.startup_warning = self.cfg.startup_warning.take();
+        let start_dir = start_dir.or_else(|| cfg.working_directory.clone());
+        match Pane::new(cfg, self.proxy.clone(), start_dir) {
             Ok(mut pane) => {
+                pane.tab_group = group;
+                self.next_session += 1;
+                pane.session_title = format!("Shell {}", self.next_session);
                 pane.open(el);
                 if !pane.exited {
                     self.panes.push(pane);
@@ -1446,7 +1694,7 @@ impl App {
 impl ApplicationHandler<Wake> for App {
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.panes.is_empty() {
-            self.open_pane(el, None);
+            self.open_pane(el, None, None);
             if self.panes.is_empty() {
                 el.exit();
             }
@@ -1465,7 +1713,12 @@ impl ApplicationHandler<Wake> for App {
             Some(Request::NewWindow) => {
                 // A new window starts where this one's shell is.
                 let dir = self.panes[i].term.cwd.clone();
-                self.open_pane(el, dir);
+                self.open_pane(el, dir, None);
+            }
+            Some(Request::NewTab) => {
+                let dir = self.panes[i].term.cwd.clone();
+                let group = self.panes[i].tab_group.clone();
+                self.open_pane(el, dir, Some(group));
             }
             Some(Request::Close) => {
                 // Dropping the pane closes its window and ends its shell.
@@ -1475,6 +1728,17 @@ impl ApplicationHandler<Wake> for App {
                 }
             }
             Some(Request::Quit) => el.exit(),
+            Some(Request::Reload) => {
+                if let Err(error) = self.reload_settings() {
+                    log::warn!("settings reload failed: {error:#}");
+                    self.panes[i].notify(format!("Settings unchanged: {error}"));
+                }
+            }
+            Some(Request::SetArabicFont(font)) => {
+                if let Err(error) = self.set_arabic_font(font) {
+                    self.panes[i].notify(format!("Font unchanged: {error}"));
+                }
+            }
             Some(Request::SetTheme(name)) => {
                 let Some(t) = find_theme(name) else { return };
                 // New windows start with it too.

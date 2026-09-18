@@ -46,6 +46,8 @@ pub struct DrawOpts<'a> {
     pub current: &'a [Span],
     pub search: Option<SearchBar<'a>>,
     pub picker: Option<PickerView<'a>>,
+    pub commands: Option<&'a crate::commands::CommandPalette>,
+    pub notice: Option<&'a str>,
 }
 
 impl Default for DrawOpts<'_> {
@@ -61,6 +63,8 @@ impl Default for DrawOpts<'_> {
             current: &[],
             search: None,
             picker: None,
+            commands: None,
+            notice: None,
         }
     }
 }
@@ -91,6 +95,19 @@ fn cells_of(text: &str) -> crate::grid::Row {
         }
     }
     crate::grid::Row { cells, wrapped: false }
+}
+
+/// Fit terminal UI text without splitting wide glyphs at the edge.
+fn fit_cells(text: &str, cols: usize) -> crate::grid::Row {
+    let mut row = cells_of(text);
+    if row.cells.len() > cols {
+        row.cells.truncate(cols.saturating_sub(1));
+        if row.cells.last().is_some_and(|c| c.attrs.contains(Attrs::WIDE_LEADING)) {
+            row.cells.pop();
+        }
+        if cols > 0 { row.cells.push(crate::grid::Cell { ch: '…', ..Default::default() }); }
+    }
+    row
 }
 
 /// Somewhere a frame can be drawn: the software [`Canvas`], or the GPU.
@@ -303,6 +320,9 @@ fn layout_key(
 
 pub struct Renderer {
     pub layouter: Layouter,
+    /// Readability policy, 1 disables adjustment. The application configures it.
+    pub minimum_contrast: f32,
+    contrast_cache: crate::hash::FastMap<(u32, u32, u32), Rgb>,
     /// Cache key of each visible row's layout from the last frame. Mouse
     /// hit-testing looks the layout up through these.
     layouts: Vec<u64>,
@@ -324,6 +344,13 @@ pub struct Renderer {
 }
 
 impl Renderer {
+    /// Font families can change on settings reload without changing the size.
+    pub fn invalidate_layouts(&mut self) {
+        self.layouts.clear();
+        self.cache.clear();
+        self.live.clear();
+    }
+
     /// Layout of a visible row from the last frame, for mouse hit-testing.
     pub fn row_layout(&self, row: usize) -> Option<&RowLayout> {
         self.layouts.get(row).and_then(|k| self.cache.get(k))
@@ -332,9 +359,11 @@ impl Renderer {
     pub fn new() -> Self {
         Renderer {
             layouter: Layouter::new(),
+            minimum_contrast: 1.0,
+            contrast_cache: Default::default(),
             layouts: Vec::new(),
-            pad_x: 4.0,
-            pad_y: 2.0,
+            pad_x: 12.0,
+            pad_y: 10.0,
             cache: std::collections::HashMap::new(),
             live: Vec::new(),
             scroll_frac: 0.0,
@@ -350,6 +379,8 @@ impl Renderer {
         opts: &DrawOpts,
     ) {
         let palette: &Palette = &term.palette;
+        // Keep repeated colours cheap without growing indefinitely on truecolor artwork.
+        if self.contrast_cache.len() > 4096 { self.contrast_cache.clear(); }
         let selection = opts.selection;
         let reverse = term.modes.contains(crate::term::Modes::REVERSE_VIDEO);
         let def_bg = if reverse { palette.fg } else { palette.bg };
@@ -444,6 +475,16 @@ impl Renderer {
                 } else if let Some(highlight) = highlights[cell_idx] {
                     bg = highlight;
                     fg = palette.highlight_fg(fg, bg);
+                } else if self.minimum_contrast > 1.0
+                    && !cell.attrs.contains(Attrs::HIDDEN)
+                    && !matches!(cell.ch, '\u{2580}'..='\u{259f}' | '\u{e0b0}'..='\u{e0d7}') {
+                    // Faint remains less prominent. Preserve block graphics and
+                    // Powerline separators, whose ink represents a surface.
+                    let minimum = if cell.attrs.contains(Attrs::DIM) {
+                        (self.minimum_contrast / 1.5).max(1.0)
+                    } else { self.minimum_contrast };
+                    let key = (fg.pack(), bg.pack(), minimum.to_bits());
+                    fg = *self.contrast_cache.entry(key).or_insert_with(|| fg.ensure_contrast(bg, minimum));
                 }
                 (fg, bg)
             }));
@@ -601,6 +642,17 @@ impl Renderer {
         if let Some(p) = &opts.picker {
             self.draw_picker(canvas, fonts, term, p);
         }
+        if let Some(commands) = opts.commands {
+            self.draw_commands(canvas, fonts, term, commands);
+        }
+        if let Some(message) = opts.notice {
+            let cols = ((canvas.width() as f32 - 2.0 * self.pad_x) / cell_w).max(0.0) as usize;
+            let row = fit_cells(message, cols.saturating_sub(2));
+            let y = (canvas.height() as f32 - self.pad_y - cell_h).max(0.0);
+            canvas.fill_rect(self.pad_x, y, (row.cells.len() + 2) as f32 * cell_w, cell_h, palette.selection_bg);
+            self.draw_text(canvas, fonts, &row, self.pad_x + cell_w, y,
+                palette.highlight_fg(palette.fg, palette.selection_bg), palette.selection_bg, term);
+        }
 
         // --- bell: a brief flash of the window edge ---
         if opts.bell > 0.01 {
@@ -620,7 +672,7 @@ impl Renderer {
         let cursor_shown = term.modes.contains(crate::term::Modes::CURSOR_VISIBLE)
             && term.grid.view_offset == 0
             && (opts.cursor_on || !opts.focused)
-            && opts.picker.is_none();
+            && opts.picker.is_none() && opts.commands.is_none();
         if cursor_shown {
             let cur = term.grid.screen.cursor;
             if cur.row < rows {
@@ -629,6 +681,7 @@ impl Renderer {
                     return;
                 };
                 let col = layout.column_of(cur.col.min(cols.saturating_sub(1)));
+                let cursor_rtl = layout.is_rtl(cur.col);
                 let x = self.pad_x + col as f32 * cell_w;
                 let y = self.pad_y + (cur.row as f32 + frac) * cell_h;
                 let shape = match term.cursor_style.blink {
@@ -646,7 +699,7 @@ impl Renderer {
                     canvas.fill_rect(x, y + cell_h - 2.0, cell_w, 2.0, palette.cursor);
                 } else if shape == CursorShape::Bar {
                     // On the leading edge: the side the next character lands on.
-                    let bx = if layout.rtl { x + cell_w - 2.0 } else { x };
+                    let bx = if cursor_rtl { x + cell_w - 2.0 } else { x };
                     canvas.fill_rect(bx, y, 2.0, cell_h, palette.cursor);
                 } else {
                     canvas.fill_rect(x, y, cell_w, cell_h, palette.cursor);
@@ -671,9 +724,8 @@ impl Renderer {
                 // A thin marker on the leading edge shows the writing direction
                 // the cursor will advance in — invaluable in mixed text.
                 if layout.rtl {
-                    canvas.fill_rect(x, y, 2.0, cell_h * 0.35, palette.selection_bg);
-                } else {
-                    canvas.fill_rect(x + cell_w - 2.0, y, 2.0, cell_h * 0.35, palette.selection_bg);
+                    let edge = if cursor_rtl { x } else { x + cell_w - 2.0 };
+                    canvas.fill_rect(edge, y, 2.0, cell_h * 0.35, palette.selection_bg);
                 }
             }
         }
@@ -684,6 +736,55 @@ impl Renderer {
 const PICKER_HINT: &str = "↑↓ choose · Enter apply · Esc cancel";
 
 impl Renderer {
+    fn draw_commands<T: Target>(&mut self, canvas: &mut T, fonts: &mut Fonts, term: &Terminal,
+        p: &crate::commands::CommandPalette) {
+        let palette = &term.palette;
+        let (cw, ch) = (fonts.cell_w, fonts.cell_h);
+        if (canvas.width() as f32) < cw * 6.0 || (canvas.height() as f32) < ch * 5.0 {
+            let cols = (canvas.width() as f32 / cw).floor().max(0.0) as usize;
+            canvas.fill_rect(0.0, 0.0, canvas.width() as f32, ch, palette.bg);
+            self.draw_text(canvas, fonts, &fit_cells(&format!("> {}", p.query), cols),
+                0.0, 0.0, palette.fg, palette.bg, term);
+            return;
+        }
+        let cols = ((canvas.width() as f32 - 4.0 * cw) / cw).floor().max(4.0) as usize;
+        let cols = cols.min(62);
+        let matches = p.matches();
+        let room = ((canvas.height() as f32 / ch).floor() as usize).saturating_sub(7).max(1).min(10);
+        let shown = matches.len().max(1).min(room);
+        let w = (cols + 2) as f32 * cw;
+        let h = (shown + 4) as f32 * ch;
+        let x = ((canvas.width() as f32 - w) * 0.5).max(0.0).round();
+        let y = ((canvas.height() as f32 - h) * 0.25).max(0.0).round();
+        canvas.fill_rect(x - 1.0, y - 1.0, w + 2.0, h + 2.0, palette.cursor);
+        canvas.fill_rect(x, y, w, h, palette.bg);
+        let header = fit_cells(&format!("> {}", p.query), cols.saturating_sub(1));
+        self.draw_text(canvas, fonts, &header, x + cw, y + ch * 0.5, palette.fg, palette.bg, term);
+        canvas.fill_rect(x + (header.cells.len() + 1) as f32 * cw, y + ch * 0.5, 2.0, ch, palette.cursor);
+        let first = p.selected.saturating_sub(shown / 2).min(matches.len().saturating_sub(shown));
+        for (row, &id) in matches.iter().skip(first).take(shown).enumerate() {
+            let selected = row + first == p.selected;
+            let bg = if selected { palette.selection_bg } else { palette.bg };
+            let fg = palette.highlight_fg(palette.fg, bg);
+            let yy = y + (row as f32 + 2.0) * ch;
+            canvas.fill_rect(x + cw * 0.5, yy, w - cw, ch, bg);
+            let (_, label, hint) = crate::commands::ACTIONS[id];
+            let hint_cols = if cols >= 36 { hint.chars().count() } else { 0 };
+            let label = fit_cells(label, cols.saturating_sub(hint_cols + 2));
+            self.draw_text(canvas, fonts, &label, x + cw, yy, fg, bg, term);
+            if hint_cols > 0 {
+                self.draw_text(canvas, fonts, &cells_of(hint), x + w - (hint_cols + 1) as f32 * cw,
+                    yy, fg, bg, term);
+            }
+        }
+        if matches.is_empty() {
+            self.draw_text(canvas, fonts, &fit_cells("No matching commands", cols), x + cw,
+                y + 2.0 * ch, palette.fg, palette.bg, term);
+        }
+        self.draw_text(canvas, fonts, &fit_cells("↑↓ choose · Enter run · Esc close", cols), x + cw,
+            y + h - ch * 1.5, palette.fg.dimmed(palette.bg), palette.bg, term);
+    }
+
     /// The theme picker: a query line, the matching themes each painted in
     /// its own colours with a swatch of its accents, and a key hint.
     fn draw_picker<T: Target>(&mut self, canvas: &mut T, fonts: &mut Fonts, term: &Terminal, p: &PickerView) {

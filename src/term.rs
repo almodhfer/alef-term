@@ -2,6 +2,7 @@
 
 use crate::color::{Color, Rgb};
 use crate::grid::{Attrs, Cell, Grid, Row, Screen};
+use unicode_normalization::UnicodeNormalization;
 use unicode_width::UnicodeWidthChar;
 use vte::{Params, Perform};
 
@@ -55,21 +56,18 @@ impl Default for Modes {
 
 /// Base paragraph direction policy for rendering.
 ///
-/// The default is deliberately **not** auto-detection. Deriving base direction
-/// from row content makes a line's alignment a function of what happens to be
-/// on it: a prompt jumps between edges as you type, `git log --graph` loses its
-/// gutter, and any table whose first strong character is Arabic flips whole.
-/// Pinning the base to LTR keeps the frame still while RTL runs reorder inside
-/// it — which is what actually reads correctly. A fully-RTL workflow can select
-/// `ForceRtl`, and applications can still request RTL inline with RLM/RLE/RLI.
+/// Auto detects prose direction within each fixed-column field. Shell prompt
+/// prefixes and path-like tokens keep an LTR base (see `layout`), so inserting
+/// an English word into Arabic prose does not reverse the sentence around it.
+/// Forced modes remain available for applications with their own conventions.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum BidiMode {
     /// Base level pinned to LTR; RTL runs still reorder within the line.
-    #[default]
     ForceLtr,
     /// Base level pinned to RTL: the whole screen reads right-to-left.
     ForceRtl,
-    /// Detect per row from the first strong character (UAX#9 P2/P3).
+    /// Detect per field, preserving common shell prefixes and paths.
+    #[default]
     Auto,
 }
 
@@ -614,25 +612,20 @@ fn parse_color_semicolon<'a>(iter: &mut vte::ParamsIter<'a>) -> Option<Color> {
 /// properly, and makes copied text ordinary Arabic rather than presentation
 /// forms, which Unicode discourages for interchange.
 ///
-/// Forms that decompose to *several* characters are ligatures — lam-alef and
-/// friends. Those are left alone: they are already a single correct glyph
-/// sitting in a single cell, and expanding them would need more cells than the
-/// program reserved.
+/// Recompose after compatibility decomposition: alef with hamza, for example,
+/// decomposes into a base and mark but is still a single letter. Leaving its
+/// presentation form intact can produce boxed glyphs in Arabic fonts.
+/// Forms that still contain several characters after recomposition (lam-alef
+/// and other ligatures) stay in their single reserved cell; expanding those
+/// would move the editor's following columns.
 #[inline]
 fn unshape_presentation_form(c: char) -> char {
     if !matches!(c as u32, 0xFB50..=0xFDFF | 0xFE70..=0xFEFF) {
         return c;
     }
-    let mut out = None;
-    let mut count = 0usize;
-    unicode_normalization::char::decompose_compatible(c, |d| {
-        count += 1;
-        if count == 1 {
-            out = Some(d);
-        }
-    });
-    match out {
-        Some(base) if count == 1 => base,
+    let mut normalized = std::iter::once(c).nfkc();
+    match (normalized.next(), normalized.next()) {
+        (Some(base), None) => base,
         _ => c,
     }
 }
@@ -1242,9 +1235,11 @@ impl Perform for Terminal {
                 let sb = self.grid.max_scrollback;
                 let palette = self.default_palette.clone();
                 let cell_px = self.cell_px;
+                let bidi_mode = self.bidi_mode;
                 *self = Terminal::new(rows, cols, sb);
                 self.set_palette(palette);
                 self.cell_px = cell_px;
+                self.bidi_mode = bidi_mode;
             }
             (Some(b'('), b'0') => self.dec_graphics = true,
             (Some(b'('), _) => self.dec_graphics = false,

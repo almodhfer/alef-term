@@ -51,6 +51,13 @@ fn alt_prefixes_escape_as_meta() {
 }
 
 #[test]
+fn option_backspace_deletes_a_word_and_control_space_sends_nul() {
+    assert_eq!(with(&Key::Named(NamedKey::Backspace), None, ModifiersState::ALT), b"\x1b\x7f");
+    assert_eq!(with(&Key::Named(NamedKey::Space), None, ModifiersState::CONTROL), b"\0");
+    assert_eq!(with(&Key::Named(NamedKey::Enter), None, ModifiersState::ALT), b"\x1b\r");
+}
+
+#[test]
 fn arrows_follow_the_cursor_key_mode() {
     let normal = KeyContext { app_cursor: false, ..Default::default() };
     let app = KeyContext { app_cursor: true, ..Default::default() };

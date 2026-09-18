@@ -255,3 +255,68 @@ fn theme_switches_recolour_indexed_text_and_leave_literal_colours_intact() {
         assert!(paint.rects.contains(&Rgb(23, 45, 67)));
     }
 }
+
+#[test]
+fn pastel_application_text_stays_readable_on_light_backgrounds() {
+    // A pale code/link colour retained by an application started in dark mode.
+    let mut rig = Rig::new("\x1b[38;2;180;190;254;4mA─سلام");
+    let original = Rgb(180, 190, 254);
+    rig.term.set_palette(Palette::light());
+    rig.renderer.minimum_contrast = 4.5;
+    let paint = rig.draw(opts());
+    assert!(!paint.glyphs.is_empty());
+    let ink = paint.glyphs[0];
+    assert!(contrast(ink, rig.term.palette.bg) >= 4.5);
+    assert!(ink.2 > ink.1 && ink.1 > ink.0, "keep the original blue hue");
+    assert!(paint.glyphs.iter().all(|&c| c == ink));
+    assert!(paint.rects.iter().all(|&c| c == ink));
+    assert_eq!(rig.term.grid.viewport_row(0).cells[0].fg, arabic_term::color::Color::Rgb(original));
+    // Cached layouts/colours must follow a theme switch and an opt-out.
+    rig.term.set_palette(Palette::dark());
+    assert!(rig.draw(opts()).glyphs.iter().all(|&c| c == original));
+    rig.term.set_palette(Palette::light());
+    rig.renderer.minimum_contrast = 1.0;
+    assert!(rig.draw(opts()).glyphs.iter().all(|&c| c == original));
+}
+
+#[test]
+fn contrast_respects_cell_backgrounds_dim_and_concealment() {
+    let mut rig = Rig::new("\x1b[38;2;180;190;254;48;2;240;240;240mA");
+    rig.renderer.minimum_contrast = 4.5;
+    let bg = Rgb(240, 240, 240);
+    let paint = rig.draw(opts());
+    assert!(paint.rects.contains(&bg), "backgrounds must never be recoloured");
+    assert!(paint.glyphs.iter().all(|&c| contrast(c, bg) >= 4.5));
+    rig.term = Terminal::new(1, 12, 10);
+    Vt::new().feed(&mut rig.term, b"\x1b[2;38;2;180;190;254;48;2;240;240;240mA");
+    let dim = rig.draw(opts()).glyphs[0];
+    assert!(contrast(dim, bg) >= 3.0 && contrast(dim, bg) < 4.5);
+    rig.term = Terminal::new(1, 12, 10);
+    Vt::new().feed(&mut rig.term, b"\x1b[38;2;240;240;240;48;2;240;240;240mA\x1b[8mB");
+    assert_eq!(rig.draw(opts()).glyphs, [bg], "identical colours and SGR conceal stay concealed");
+}
+
+#[test]
+fn contrast_preserves_block_art_and_powerline_surfaces() {
+    let mut rig = Rig::new("\x1b[38;2;180;190;254m█░\u{e0b0}");
+    rig.term.set_palette(Palette::light());
+    rig.renderer.minimum_contrast = 4.5;
+    let paint = rig.draw(opts());
+    assert!(paint.rects.iter().all(|&c| c == Rgb(180, 190, 254)));
+    assert!(paint.glyphs.iter().all(|&c| c == Rgb(180, 190, 254)));
+}
+
+#[test]
+fn contrast_adjustment_chooses_a_reachable_value_and_preserves_readable_ink() {
+    for bg in [Rgb(250, 250, 247), Rgb(20, 22, 27), Rgb(128, 128, 128)] {
+        for fg in [Rgb(180, 190, 254), Rgb(250, 220, 160), Rgb(30, 40, 50)] {
+            let ink = fg.ensure_contrast(bg, 4.5);
+            assert!(contrast(ink, bg) >= 4.5);
+            if contrast(fg, bg) >= 4.5 { assert_eq!(ink, fg); }
+            assert_eq!(fg.ensure_contrast(bg, 1.0), fg);
+        }
+    }
+    let bg = Rgb(128, 128, 128);
+    let best = Rgb(130, 140, 150).ensure_contrast(bg, 21.0);
+    assert_eq!(best, Rgb(0, 0, 0), "unreachable ratios use the stronger endpoint");
+}

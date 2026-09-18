@@ -50,19 +50,25 @@ true, and copying text gives back what the program actually emitted.
 terminals convert Arabic to Arabic Presentation Forms before writing it out —
 vim and neovim do this by default, via `'arabicshape'`. Those codepoints are
 frozen letter shapes, so passing them to a real shaper yields disconnected
-letters. Each one that maps back to a single base letter is restored, letting
-the shaper join properly; multi-character ligature forms are left alone, since
-they are already one correct glyph in one cell.
+letters. Each one that maps back to a single base letter is restored, including
+hamza and madda letters such as `إ أ ؤ ئ آ`. Compatibility decomposition is
+followed by canonical recomposition so their marks do not get mistaken for
+extra letters. This prevents boxed characters in fonts such as Scheherazade New
+and lets the shaper join properly. Multi-character ligature forms retain their
+single cell so the editor's following columns do not move.
 
 ### Two decisions worth explaining
 
-**Base direction is pinned left-to-right by default.** Auto-detecting a row's
-direction from its content sounds right and behaves badly: the prompt jumps
-between edges as you type, `git log --graph` loses its gutter, and any table
-whose first strong character happens to be Arabic flips whole. Pinning the base
-keeps the frame still while Arabic runs reorder inside it, which is what
-actually reads correctly. Press `Cmd R` to cycle to forced-RTL or auto, and
-programs can still request RTL inline with `U+200F`/`U+202B`/`U+2067`.
+**Base direction is automatic within each field by default.** An Arabic
+sentence such as `افتح الملف README ثم احفظ التغييرات` needs an RTL base so
+that the phrases on either side of `README` stay in sentence order; the English
+word itself still reads left-to-right. Table separators and multiple-space
+column gutters stay fixed. Common shell prefixes (`$`, `%`, `#`, `>`, `❯`,
+`➜`) and path-like first tokens retain an LTR base. This is a terminal policy
+on top of the [Unicode Bidirectional Algorithm](https://www.unicode.org/reports/tr9/),
+not an attempt to parse every shell or programming language. For ambiguous
+output, set `bidi_mode = "ltr"` or `"rtl"`, or press `Cmd R` to cycle through
+auto → LTR → RTL. Text storage and copying always remain in logical order.
 
 **The Arabic font is scaled to match the cell.** Naskh faces set much narrower
 on the em than a monospace Latin face, so Arabic drawn at the Latin size looks
@@ -139,6 +145,78 @@ size, scrollback, scroll speed, cursor shape and blink, the visual bell, the
 theme, and `#rrggbb` overrides for the foreground, background, cursor,
 selection and the 16 ANSI colours.
 
+The grid has 12 logical pixels of horizontal padding and 10 vertically; these
+insets scale with Retina displays. The default line box fits both fonts, and
+`line_height` adds leading without stretching glyphs. The initial window size
+includes these margins, so `cols` and `rows` describe the usable grid. Light
+box-drawing strokes follow the font's column width, so increasing line spacing
+does not make borders heavier.
+
+```toml
+padding_x = 12
+padding_y = 10
+line_height = 1.0           # 1.0..2.0, based on the shared Arabic/Latin line box
+bidi_mode = "auto"         # auto | ltr | rtl
+```
+
+### Arabic font styles
+
+Press `Cmd Shift F` to choose an Arabic font, or open `Cmd Shift P` and type
+`Arabic font`. Four installed-family presets are offered:
+
+| Font | Character |
+| --- | --- |
+| Noto Naskh Arabic | Clear, balanced Naskh |
+| Amiri | Traditional book Naskh |
+| Scheherazade New | More calligraphic Naskh |
+| Geeza Pro | Familiar macOS Arabic |
+
+Enter applies the choice to every open terminal and saves `arabic_font` in the
+configuration. The Latin font and column width stay unchanged; row height adapts
+to each Arabic face, including stacked marks in bold. Taller calligraphic fonts
+show fewer rows in the same window. Noto Naskh's variable weight is applied to
+both shaping and drawing, so bold Arabic is actually bold. Fonts are loaded from
+the system, not bundled: an unavailable choice reports that it is missing and
+keeps the current font. Repeated switching reuses font data already in memory.
+
+`cargo run --example arabic_fonts` renders comparison samples through the same
+shaper and renderer as the app. Set `OUT_DIR` to choose the output directory.
+
+### Everyday use
+
+`Cmd Shift P` opens a searchable command palette. Type a few words, use the
+arrow keys, and press Enter. It includes tabs, windows, search, themes,
+clipboard actions, zoom, settings reload, and explicit text-direction choices.
+
+On macOS, `Cmd T` opens a native tab with an independent shell. `Cmd Shift [`
+and `Cmd Shift ]` switch tabs; `Cmd 1` through `Cmd 8` choose a tab, and `Cmd 9`
+selects the last one. `Cmd N` starts a separate window, and `Cmd W` closes only
+the current tab. Shell-provided titles appear in the tab bar; otherwise sessions
+are numbered. Hidden tabs still receive output, but do not repaint until shown.
+
+Command shortcuts remain available with an Arabic keyboard layout active.
+`Cmd A` selects all available text, and `Cmd C` copies it. Selecting text alone
+keeps the clipboard intact; set `copy_on_select = true` for automatic copying.
+Hold Shift while dragging to select text inside mouse-aware programs such as
+editors. Dragging files into the window inserts quoted shell paths. Pasted
+CRLF, CR and LF line endings are normalized consistently, while Arabic marks
+and joiners are preserved. `Cmd K` clears scrollback and keeps the live screen.
+
+`Cmd Shift R` reloads settings in every open tab and window. Invalid settings
+leave running sessions unchanged and show a message. Removing a setting restores
+its default; command-line overrides still take precedence. Fonts, spacing,
+themes, direction, cursor, scroll tuning, and clipboard preferences apply live.
+Renderer selection, initial dimensions, and starting directory apply to new
+sessions. `Cmd 0` resets to the configured font size. Validate the file without
+opening a window with `arabic-term --check-config`.
+
+Set `working_directory = "~/projects"`, or use `--working-directory <path>`, to
+choose the initial folder. Otherwise a shell inherits the launch directory;
+Dock/Finder launches from `/` start at home. New sessions use the current shell's
+folder when it reports OSC 7. `--exec` runs only in the first session. Missing
+UTF-8 locale defaults and the unsupported macOS `C.UTF-8` locale are repaired
+for child processes, while explicit supported locale preferences are preserved.
+
 ### Themes
 
 Eighteen themes are built in: the default `dark` and `light`, Dracula, Nord,
@@ -157,6 +235,13 @@ Selection and search highlights keep coloured text where it is readable and
 use a contrasting foreground where needed. Dim text blends toward its cell
 background in both light and dark themes. A terminal reset keeps the selected
 theme, including configured colour overrides.
+
+Text has a configurable contrast floor (`minimum_contrast = 4.5`). Pale RGB
+and 256-colour text from applications started in dark mode remains readable
+when switching to light. Only unreadable foreground ink is adjusted, retaining
+its colour; backgrounds, images, block art and Powerline surfaces stay exact.
+Dim text uses a lower floor so it remains secondary. Set `minimum_contrast = 1`
+to preserve application colours exactly, and press Cmd Shift R to apply it.
 
 Full-screen applications can also have their own themes. Arabic Term reports
 its current colours and light/dark appearance; applications that draw explicit
@@ -178,9 +263,14 @@ background overrides under `[theme.custom.dark]` and light ones under
 | Key | Action |
 | --- | --- |
 | `Cmd` `+` / `-` / `0` | font size |
-| `Cmd R` | cycle base direction: LTR → RTL → auto |
+| `Cmd R` | cycle base direction: auto → LTR → RTL |
 | `Cmd Shift T` | choose a theme, previewed live; type to filter, `Enter` keeps it, `Esc` cancels |
-| `Cmd N` / `Cmd W` / `Cmd Q` | new window (in the shell's directory, when it reports it with OSC 7) / close window / quit |
+| `Cmd T` / `Cmd N` / `Cmd W` / `Cmd Q` | new native tab / new window / close current tab / quit |
+| `Cmd Shift [` / `Cmd Shift ]` | previous / next tab |
+| `Cmd 1` … `Cmd 9` | choose a tab; 9 selects the last |
+| `Cmd Shift P` | searchable command palette |
+| `Cmd Shift R` | reload settings without restarting sessions |
+| `Cmd A` / `Cmd K` | select all text / clear scrollback |
 | `Cmd C` / `Cmd V` | copy / paste |
 | `Cmd F` | search the scrollback; `Enter` / `Shift Enter` (or the arrows) step to older / newer hits, `Cmd G` likewise, `Esc` closes |
 | double / triple click | select a word / a whole line, soft wraps included |
@@ -233,7 +323,7 @@ were drawn on, so they scroll with their text:
 cargo test
 ```
 
-207 tests, covering: VT and grid behaviour; the built-in themes, the theme
+The test suite covers: VT and grid behaviour; the built-in themes, the theme
 picker and saving its choice; font coverage and fallback; the
 Arabic layout itself (reordering, ligatures, diacritics, bracket mirroring,
 column pinning, cell-grid alignment, joining across a soft wrap); key encoding
@@ -325,6 +415,9 @@ for.
 | `src/render.rs` | software rasterisation and blending |
 | `src/font.rs` | font loading, script fallback, glyph cache |
 | `src/boxdraw.rs` | procedural box-drawing glyphs |
+| `src/commands.rs` | command palette and action filtering |
+| `src/input.rs` | layout-independent shortcuts, paste normalization, path quoting |
+| `src/cli.rs` | validated command-line options |
 | `src/keys.rs` | key presses to terminal byte sequences |
 | `src/frame_hold.rs` | withholding frames during a synchronized update |
 | `src/scroll.rs` | scroll position and easing |
