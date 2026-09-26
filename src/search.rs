@@ -25,6 +25,7 @@ struct RowRef {
 
 #[derive(Default)]
 pub struct Index {
+    /// The grid's text with Arabic spelling variants folded; see [`fold`].
     text: String,
     /// `text` with ASCII letters lowered, for case-insensitive queries. The
     /// byte offsets are identical, which is the point.
@@ -70,7 +71,7 @@ impl Index {
             self.rows.push(RowRef { line, start: self.text.len(), len });
             for c in &row.cells[..len] {
                 if !c.attrs.contains(Attrs::WIDE_SPACER) {
-                    self.text.push(c.ch);
+                    self.text.push(fold(c.ch));
                 }
             }
             if !row.wrapped {
@@ -91,9 +92,10 @@ impl Index {
     /// A query with no upper-case ASCII letter is matched without regard to
     /// case; one with any is matched exactly. Arabic vowel marks in the query
     /// are dropped, since the index holds base letters only, so a search
-    /// typed without harakat finds text written with them.
+    /// typed without harakat finds text written with them. Arabic spelling
+    /// variants are folded on both sides, so أحمد and احمد find each other.
     pub fn find(&self, query: &str) -> (Vec<Match>, Vec<Span>) {
-        let needle: String = query.chars().filter(|c| !is_arabic_mark(*c)).collect();
+        let needle: String = query.chars().filter(|c| !is_arabic_mark(*c)).map(fold).collect();
         if needle.is_empty() || self.rows.is_empty() {
             return (Vec::new(), Vec::new());
         }
@@ -148,6 +150,21 @@ impl Index {
             cell += if unicode_width::UnicodeWidthChar::width(c).unwrap_or(1) >= 2 { 2 } else { 1 };
         }
         cell.min(r.len)
+    }
+}
+
+/// Fold letters that Arabic writers use interchangeably to one form, as
+/// Arabic search engines do: the hamza and madda seats of alef and alef
+/// wasla to bare alef, alef maqsura to ya, and ta marbuta to ha.
+///
+/// Every pair is two bytes in UTF-8, so offsets into folded text are offsets
+/// into the original, and hits still map to the right cells.
+fn fold(c: char) -> char {
+    match c {
+        'أ' | 'إ' | 'آ' | 'ٱ' => 'ا',
+        'ى' => 'ي',
+        'ة' => 'ه',
+        _ => c,
     }
 }
 

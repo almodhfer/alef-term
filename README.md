@@ -457,7 +457,9 @@ one. Typing narrows as you go, every hit is highlighted, the view jumps to the
 nearest one above the bottom of the screen, and `Enter` walks back through
 history. Case is ignored unless the query has a capital; Arabic vowel marks in
 the query are ignored, so a word typed without harakat finds text written
-with them; a hit broken by the margin is still found and highlighted on both
+with them; spellings Arabic writers use interchangeably find each other, as
+in Arabic search engines — أ إ آ ٱ and ا, ى and ي, ة and ه — so `احمد` finds
+`أحمد`; a hit broken by the margin is still found and highlighted on both
 rows. The grid is flattened into one string and searched with a SIMD
 substring finder: forty thousand lines index in about 15 ms, only when the
 content changed, and a query over them takes a millisecond or two.

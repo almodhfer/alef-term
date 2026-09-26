@@ -43,6 +43,22 @@ fn arabic_is_found_with_or_without_harakat() {
 }
 
 #[test]
+fn arabic_spelling_variants_find_each_other() {
+    // Hamza seats on alef, alef maqsura and ta marbuta are written
+    // interchangeably, so each spelling finds the others.
+    let t = term(3, 40, "أحمد في المدرسة\r\nإلى آخر مستشفى");
+    let spans = find(&t, "احمد");
+    assert_eq!(spans.len(), 1);
+    assert_eq!((spans[0].start, spans[0].end), (0, 4), "the hit covers the original letters");
+    assert_eq!(find(&t, "أحمد").len(), 1);
+    assert_eq!(find(&t, "المدرسه").len(), 1);
+    assert_eq!(find(&t, "الى").len(), 1);
+    assert_eq!(find(&t, "اخر").len(), 1);
+    assert_eq!(find(&t, "مستشفي").len(), 1);
+    assert_eq!(find(&t, "إلي").len(), 1, "variants in the query fold too");
+}
+
+#[test]
 fn a_hit_across_a_soft_wrap_has_one_span_per_row() {
     let t = term(4, 10, "xxxxxxxxneedlexxxx");
     // "xxxxxxxxne" | "edlexxxx"
