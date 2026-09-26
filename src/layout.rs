@@ -379,6 +379,8 @@ impl Layouter {
         // pooling at one end of the line.
         struct Group {
             slot: Slot,
+            /// The face; one slot may hold several when fallback fonts are loaded.
+            font: usize,
             style: Style,
             items: Vec<usize>,
         }
@@ -390,15 +392,15 @@ impl Layouter {
                 bold: cell.attrs.contains(Attrs::BOLD),
                 italic: cell.attrs.contains(Attrs::ITALIC),
             };
-            let slot = fonts.slot_for(it.ch, style);
+            let (slot, font) = fonts.pick(it.ch, style);
             let breaks = it.ch == ' ';
             match groups.last_mut() {
-                Some(g) if g.slot == slot && g.style == style && !breaks => g.items.push(i),
-                _ => groups.push(Group { slot, style, items: vec![i] }),
+                Some(g) if g.slot == slot && g.font == font && g.style == style && !breaks => g.items.push(i),
+                _ => groups.push(Group { slot, font, style, items: vec![i] }),
             }
             if breaks {
                 // force the next character to open a fresh group
-                groups.push(Group { slot, style, items: Vec::new() });
+                groups.push(Group { slot, font, style, items: Vec::new() });
             }
         }
         groups.retain(|g| !g.items.is_empty());
@@ -425,7 +427,7 @@ impl Layouter {
         let _ = box_w;
 
         for (gi, g) in groups.iter().enumerate() {
-            let font = fonts.face_id(g.slot, g.style);
+            let font = g.font;
             let px = fonts.px_for(g.slot);
             let upem = fonts.faces[font].upem;
             let scale = px / upem;

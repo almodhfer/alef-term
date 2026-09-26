@@ -198,6 +198,13 @@ pub struct Fonts {
     auto_arabic_scale: bool,
     /// Bumped whenever metrics change, so cached layouts can be invalidated.
     generation: u64,
+    /// Every installed face, searched for characters the stack does not cover.
+    db: fontdb::Database,
+    /// The face found for each such character, or `None` when no installed
+    /// font has it. Each character is searched for once.
+    fallback: crate::hash::FastMap<char, Option<usize>>,
+    /// Faces loaded for `fallback`, tried before searching the system again.
+    extras: Vec<usize>,
     pub size_px: f32,
     /// Multiplier on the line box shared by Latin and Arabic, at least 1.
     line_height: f32,
@@ -261,6 +268,36 @@ const FAMILIES: &[(Slot, &[&str])] = &[
     ),
 ];
 
+/// Faces tried first for a character none of the stack's faces cover, before
+/// any other installed font, so a script gets a broad, legible design rather
+/// than whichever file happens to be found first.
+const FALLBACK_FAMILIES: &[&str] = &[
+    // Chinese, Japanese, Korean. The monospace CJK cut matches the grid.
+    "Noto Sans Mono CJK SC",
+    "Noto Sans CJK SC",
+    "Source Han Sans SC",
+    "PingFang SC",
+    "Hiragino Sans GB",
+    "Hiragino Sans",
+    "Heiti SC",
+    "Apple SD Gothic Neo",
+    "Microsoft YaHei",
+    "Malgun Gothic",
+    "WenQuanYi Micro Hei",
+    "Droid Sans Fallback",
+    // Hebrew, the other right-to-left script in common use.
+    "Noto Sans Hebrew",
+    "Arial Hebrew",
+    // Broad coverage for everything else.
+    "Noto Sans",
+    "Arial Unicode MS",
+    "DejaVu Sans",
+];
+
+/// Families that claim every character but draw only placeholder boxes;
+/// choosing one would hide a real font further down the list.
+const PLACEHOLDER_FAMILIES: &[&str] = &["LastResort", "Adobe Blank"];
+
 /// Last-resort absolute paths, for the case where no system font database is
 /// available (a stripped container, say) but the files are still on disk.
 const FALLBACK_PATHS: &[(Slot, &str, u32)] = &[
@@ -295,6 +332,14 @@ fn style_of(s: Style) -> (fontdb::Weight, fontdb::Style) {
 /// exactly-named family always wins and we can fall back within the family when
 /// a particular style is missing.
 fn find_face(db: &fontdb::Database, family: &str, style: Style) -> Option<(String, u32)> {
+    let face = best_face(db, family, style)?;
+    match &face.source {
+        fontdb::Source::File(p) => Some((p.to_str()?.to_string(), face.index)),
+        _ => None,
+    }
+}
+
+fn best_face<'a>(db: &'a fontdb::Database, family: &str, style: Style) -> Option<&'a fontdb::FaceInfo> {
     let (want_weight, want_style) = style_of(style);
     let mut best: Option<(&fontdb::FaceInfo, i32)> = None;
     for face in db.faces() {
@@ -310,11 +355,7 @@ fn find_face(db: &fontdb::Database, family: &str, style: Style) -> Option<(Strin
             best = Some((face, score));
         }
     }
-    let (face, _) = best?;
-    match &face.source {
-        fontdb::Source::File(p) => Some((p.to_str()?.to_string(), face.index)),
-        _ => None,
-    }
+    best.map(|(face, _)| face)
 }
 
 const SLOTS: usize = 5;
@@ -456,6 +497,9 @@ impl Fonts {
             arabic_scale: arabic_scale.unwrap_or(1.0),
             auto_arabic_scale: auto,
             generation: 0,
+            db,
+            fallback: Default::default(),
+            extras: Vec::new(),
             size_px,
             line_height: 1.0,
             cell_w: 0.0,
@@ -606,26 +650,90 @@ impl Fonts {
 
     /// Pick the slot that should render `c`.
     pub fn slot_for(&self, c: char, style: Style) -> Slot {
+        self.covering_slot(c, style).unwrap_or(Slot::Mono)
+    }
+
+    fn covering_slot(&self, c: char, style: Style) -> Option<Slot> {
         // Printable ASCII is most of what a terminal shows; skip the cmap walk.
         if self.ascii_in_mono && (' '..='~').contains(&c) {
-            return Slot::Mono;
+            return Some(Slot::Mono);
         }
         // Arabic script blocks (plus Arabic-Indic digits) go to the Arabic face
         // even when the mono face nominally has a glyph, because mono coverage
         // of Arabic is unshaped and ugly.
         if is_arabic(c) && self.has_slot[Slot::Arabic as usize] {
-            return Slot::Arabic;
+            return Some(Slot::Arabic);
         }
         let mono = &self.faces[self.face_id(Slot::Mono, style)];
         if mono.covers(c) {
-            return Slot::Mono;
+            return Some(Slot::Mono);
         }
-        for slot in [Slot::Arabic, Slot::Symbols, Slot::Emoji, Slot::Fallback] {
-            if self.has_slot[slot as usize] && self.faces[self.face_id(slot, Style::default())].covers(c) {
-                return slot;
+        [Slot::Arabic, Slot::Symbols, Slot::Emoji, Slot::Fallback].into_iter().find(|&slot| {
+            self.has_slot[slot as usize] && self.faces[self.face_id(slot, Style::default())].covers(c)
+        })
+    }
+
+    /// The slot and face that should render `c`: the stack's own faces first,
+    /// then any installed font that has the character, so Chinese, Hebrew or
+    /// Devanagari text is drawn rather than left as empty boxes.
+    pub fn pick(&mut self, c: char, style: Style) -> (Slot, usize) {
+        if let Some(slot) = self.covering_slot(c, style) {
+            return (slot, self.face_id(slot, style));
+        }
+        match self.installed_face(c) {
+            Some(id) => (Slot::Fallback, id),
+            None => (Slot::Mono, self.face_id(Slot::Mono, style)),
+        }
+    }
+
+    fn installed_face(&mut self, c: char) -> Option<usize> {
+        // Blanks, controls and invisible formatting draw nothing, and a
+        // private-use codepoint means something different in every font that
+        // has one, so another font's glyph for it would be wrong. Searching
+        // for these would cost a full scan each, for nothing.
+        if c.is_whitespace() || c.is_control() || invisible(c) || private_use(c) {
+            return None;
+        }
+        if let Some(&hit) = self.fallback.get(&c) {
+            return hit;
+        }
+        let hit = match self.extras.iter().copied().find(|&id| self.faces[id].covers(c)) {
+            Some(id) => Some(id),
+            None => self.load_covering(c),
+        };
+        self.fallback.insert(c, hit);
+        hit
+    }
+
+    /// Load the first installed face that has `c`, preferred families first.
+    /// Only each candidate's character map is read, through a memory map, so
+    /// passing over a large CJK file costs little.
+    fn load_covering(&mut self, c: char) -> Option<usize> {
+        let has = |id: fontdb::ID| {
+            self.db.with_face_data(id, |data, index| {
+                rustybuzz::ttf_parser::Face::parse(data, index).is_ok_and(|f| f.glyph_index(c).is_some())
+            }) == Some(true)
+        };
+        let real = |face: &fontdb::FaceInfo| {
+            !face.families.iter().any(|(name, _)| PLACEHOLDER_FAMILIES.contains(&name.as_str()))
+        };
+        let preferred = FALLBACK_FAMILIES.iter().filter_map(|family| best_face(&self.db, family, Style::default()));
+        let others = self.db.faces().filter(|face| face.style == fontdb::Style::Normal);
+        let info = preferred.chain(others).find(|&face| real(face) && has(face.id))?;
+        let fontdb::Source::File(path) = &info.source else { return None };
+        let face = match Face::load(path.to_str()?, info.index, Style::default()) {
+            Ok(face) => face,
+            Err(e) => {
+                log::debug!("fallback for {c:?}: {e}");
+                return None;
             }
-        }
-        Slot::Mono
+        };
+        log::debug!("fallback for {c:?}: {}", info.families.first().map_or("?", |(name, _)| name.as_str()));
+        self.faces.push(face);
+        self.scalers.push(swash::scale::ScaleContext::new());
+        let id = self.faces.len() - 1;
+        self.extras.push(id);
+        Some(id)
     }
 
     /// Pixel size used for a given face — Arabic gets its own multiplier.
@@ -682,6 +790,20 @@ impl Fonts {
             color,
         })
     }
+}
+
+/// Default-ignorable codepoints: joiners, direction marks, variation selectors
+/// and tags, which change how neighbours render but have no glyph of their own.
+fn invisible(c: char) -> bool {
+    matches!(c as u32,
+        0x00AD | 0x034F | 0x061C | 0x115F..=0x1160 | 0x17B4..=0x17B5 | 0x180B..=0x180F |
+        0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x206F | 0x3164 | 0xFE00..=0xFE0F |
+        0xFEFF | 0xFFA0 | 0xFFF0..=0xFFF8 | 0x1BCA0..=0x1BCA3 | 0x1D173..=0x1D17A |
+        0xE0000..=0xE0FFF)
+}
+
+fn private_use(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0x10FFFF)
 }
 
 /// Arabic script, its supplements, presentation forms, and Arabic-Indic digits.

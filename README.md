@@ -150,6 +150,13 @@ built in. Fonts are picked in this order:
 | icons | whatever the monospace face covers | Symbols Nerd Font Mono |
 | emoji | Apple Color Emoji (macOS), Noto Color Emoji (Linux) | |
 
+Characters none of these cover — Chinese, Japanese, Korean, Hebrew,
+Devanagari, Thai and the rest — are drawn with whichever installed font has
+them, trying well-known faces first (Noto Sans CJK, PingFang, Hiragino, Noto
+Sans Hebrew, Noto Sans). Each character is looked up once; only the fonts'
+character maps are read while searching. Private-use codepoints are left to
+the icon font, since each font gives them a different meaning.
+
 A Nerd Font is preferred for monospace because it carries the private-use icons
 that status bars, file trees and workspace managers draw with; without one they
 render as empty boxes. The "Mono" cut keeps those icons one cell wide.
@@ -353,6 +360,8 @@ Pro, which only macOS ships.
   NVIDIA GPU; Wayland sessions and other GPUs have not been tried yet. Windows
   is not supported.
 - **No tabs on Linux** yet; each session is its own window.
+- **Indic scripts are drawn one syllable per cell.** Devanagari and its
+  relatives are legible but look spaced out, as in most terminals.
 - **IME composition is not drawn.** Committed text from an input method arrives
   correctly, but the text being composed is not shown while it is typed.
 

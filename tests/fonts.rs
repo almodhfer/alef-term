@@ -1,6 +1,55 @@
 //! Font stack: coverage and fallback.
 
 use arabic_term::font::{Fonts, Slot, Style};
+use arabic_term::layout::Layouter;
+use arabic_term::term::{BidiMode, Terminal, Vt};
+
+/// Whether any real installed font has `c`, as opposed to a placeholder
+/// face that claims every character.
+fn installed(c: char) -> bool {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let found = db.faces().filter(|f| !f.families.iter().any(|(n, _)| n == "LastResort")).any(|f| {
+        db.with_face_data(f.id, |data, index| {
+            rustybuzz::ttf_parser::Face::parse(data, index).is_ok_and(|p| p.glyph_index(c).is_some())
+        }) == Some(true)
+    });
+    found
+}
+
+#[test]
+fn scripts_outside_the_stack_come_from_an_installed_font_that_has_them() {
+    // None of these are in the stack's own faces. Each must be drawn with
+    // whichever installed font has it, not left as an empty box.
+    let mut fonts = Fonts::new(16.0, None).unwrap();
+    for c in ['中', 'あ', '한', 'ש', 'क', 'ก'] {
+        if !installed(c) {
+            eprintln!("no installed font has {c:?}; not testable here");
+            continue;
+        }
+        let (_, id) = fonts.pick(c, Style::default());
+        assert!(fonts.faces[id].covers(c), "{c:?} resolved to a face without it");
+        assert_eq!(fonts.pick(c, Style::default()).1, id, "{c:?} changed face on a second lookup");
+    }
+}
+
+#[test]
+fn chinese_and_hebrew_lay_out_with_real_glyphs() {
+    let text = "中文 שלום";
+    if !text.chars().filter(|c| *c != ' ').all(installed) {
+        eprintln!("Chinese or Hebrew font missing; not testable here");
+        return;
+    }
+    let mut fonts = Fonts::new(16.0, None).unwrap();
+    let mut t = Terminal::new(3, 24, 10);
+    Vt::new().feed(&mut t, text.as_bytes());
+    let l = Layouter::new().layout_row(&t.grid.screen.rows[0], 24, &mut fonts, BidiMode::ForceLtr, true);
+    assert_eq!(l.glyphs.len(), 6);
+    assert!(l.glyphs.iter().all(|g| g.glyph != 0), "a glyph fell back to .notdef");
+    // 中 and 文 take two cells each, so Hebrew starts at cell 5. It reads
+    // right to left: its first letter sits rightmost, at column 8.
+    assert_eq!(l.column_of(5), 8);
+}
 
 #[test]
 fn a_monospace_face_is_always_found() {
