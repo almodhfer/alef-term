@@ -14,6 +14,21 @@ pub(crate) fn paste_text(clipboard: &mut Clipboard, allow_paths: bool) -> Result
     read(clipboard, allow_paths, &std::env::temp_dir())
 }
 
+/// X11 and Wayland keep a second clipboard, the primary selection: whatever
+/// was selected last, pasted with the middle button. macOS has none.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn set_primary(clipboard: &mut Clipboard, text: String) -> Result<()> {
+    use arboard::{LinuxClipboardKind, SetExtLinux};
+    Ok(clipboard.set().clipboard(LinuxClipboardKind::Primary).text(text)?)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn primary_text(clipboard: &mut Clipboard) -> Result<Option<String>> {
+    use arboard::{GetExtLinux, LinuxClipboardKind};
+    available(clipboard.get().clipboard(LinuxClipboardKind::Primary).text())
+        .context("Could not read the primary selection")
+}
+
 trait Source {
     fn files(&mut self) -> Result<Vec<PathBuf>, Error>;
     fn text(&mut self) -> Result<String, Error>;

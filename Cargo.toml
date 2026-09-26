@@ -16,13 +16,13 @@ vte = "0.15.0"
 portable-pty = "0.9.0"
 fontdb = "0.24.0"
 png = "0.18"
-arboard = "3.6.1"
+arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 anyhow = "1.0"
 bitflags = "2.13"
 log = "0.4"
 env_logger = "0.11"
 libc = "0.2"
-wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "metal"] }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "metal", "vulkan"] }
 pollster = "0.4"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.5"

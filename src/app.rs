@@ -10,6 +10,7 @@ use crate::picker::ThemePicker;
 use crate::render::{Canvas, DrawOpts, PickerView, Renderer, SearchBar};
 use crate::search::{Index, Search};
 use crate::selection::{logical_line, selected_text, url_at, word_at, Selection, Span};
+use crate::shortcuts::{Platform, Shortcut, PLATFORM};
 use crate::term::{BidiMode, CursorShape, Modes, Terminal, Vt};
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
@@ -246,6 +247,19 @@ fn open_url(url: &str) {
     }
 }
 
+/// The key a chord was pressed on, for matching shortcuts. macOS reports
+/// Command chords this way already, Shift aside; X11 and Wayland report what
+/// the modifiers produce (Ctrl+Shift+1 is `!`), so ask for the bare key.
+fn unmodified_key(event: &winit::event::KeyEvent) -> Key {
+    #[cfg(target_os = "macos")]
+    return event.logical_key.clone();
+    #[cfg(not(target_os = "macos"))]
+    {
+        use winit::platform::modifier_supplement::KeyEventExtModifierSupplement;
+        event.key_without_modifiers()
+    }
+}
+
 /// Half a blink period.
 const BLINK_HALF: std::time::Duration = std::time::Duration::from_millis(530);
 /// How long the bell flash lasts.
@@ -432,7 +446,10 @@ impl Pane {
     /// Keys while the picker is open. Returns true when consumed.
     fn picker_key(&mut self, key: &Key, text: Option<&str>) -> bool {
         let Some(picker) = &mut self.picker else { return false };
-        let sup = self.modifiers.super_key();
+        let command = PLATFORM.command(self.modifiers);
+        let erase_all = PLATFORM.erase_all(self.modifiers);
+        // The key that opened it closes it.
+        let closes = PLATFORM.shortcut(key, self.modifiers) == Some(Shortcut::Do(Action::Theme));
         let shift = self.modifiers.shift_key();
         match key {
             Key::Named(NamedKey::Escape) => {
@@ -451,13 +468,12 @@ impl Pane {
             Key::Named(NamedKey::ArrowUp) => picker.step(-1),
             Key::Named(NamedKey::ArrowDown) => picker.step(1),
             Key::Named(NamedKey::Tab) => picker.step(if shift { -1 } else { 1 }),
-            Key::Named(NamedKey::Backspace) => picker.pop(sup),
-            // The key that opened it closes it.
-            Key::Character(c) if sup && shift && c.eq_ignore_ascii_case("t") => {
+            Key::Named(NamedKey::Backspace) => picker.pop(erase_all),
+            _ if closes => {
                 self.picker_cancel();
                 return true;
             }
-            _ if sup => return false,
+            _ if command => return false,
             _ => {
                 let Some(t) = text else { return true };
                 let t: String = t.chars().filter(|c| !c.is_control()).collect();
@@ -580,7 +596,7 @@ impl Pane {
     /// Keys while the search bar is open. Returns true when consumed.
     fn search_key(&mut self, key: &Key, text: Option<&str>) -> bool {
         let Some(search) = &mut self.search else { return false };
-        let sup = self.modifiers.super_key();
+        let command = PLATFORM.command(self.modifiers);
         let shift = self.modifiers.shift_key();
         match key {
             Key::Named(NamedKey::Escape) => {
@@ -593,25 +609,25 @@ impl Pane {
                 self.search_show_current();
             }
             Key::Named(NamedKey::Backspace) => {
-                if sup {
+                if PLATFORM.erase_all(self.modifiers) {
                     search.query.clear();
                 } else {
                     search.query.pop();
                 }
                 self.search_run(true);
             }
-            Key::Character(c) if sup && c.as_str() == "g" => {
+            Key::Character(c) if command && c.as_str() == "g" => {
                 search.step(if shift { 1 } else { -1 });
                 self.search_show_current();
             }
-            Key::Character(c) if sup && c.as_str() == "v" => {
+            Key::Character(c) if command && c.as_str() == "v" => {
                 self.paste_clipboard();
             }
-            Key::Character(c) if sup && c.as_str() == "f" => {
+            Key::Character(c) if command && c.as_str() == "f" => {
                 // Cmd-F again with a selection re-seeds the query.
                 self.search_open();
             }
-            _ if sup => return false,
+            _ if command => return false,
             _ => {
                 let Some(t) = text else { return true };
                 let t: String = t.chars().filter(|c| !c.is_control()).collect();
@@ -624,10 +640,10 @@ impl Pane {
         true
     }
 
-    /// Underline the link under the pointer while Cmd is held.
+    /// Underline the link under the pointer while Cmd (Ctrl on Linux) is held.
     fn update_hover(&mut self) {
         let at = self.mouse_at;
-        let link = if self.modifiers.super_key() && !self.mouse_grabbed() {
+        let link = if PLATFORM.link(self.modifiers) && !self.mouse_grabbed() {
             url_at(&self.term, at.line, at.cell)
         } else {
             None
@@ -863,6 +879,22 @@ impl Pane {
         }
     }
 
+    /// Middle-click paste: the primary selection on X11 and Wayland, the
+    /// clipboard on macOS, which has no primary selection.
+    fn paste_primary(&mut self) {
+        #[cfg(target_os = "macos")]
+        self.paste_clipboard();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let Some(clipboard) = &mut self.clipboard else { return };
+            match crate::clipboard::primary_text(clipboard) {
+                Ok(Some(text)) => self.paste(&text),
+                Ok(None) => {}
+                Err(error) => log::warn!("primary selection paste failed: {error:#}"),
+            }
+        }
+    }
+
     fn paste_clipboard(&mut self) {
         let allow_paths = self.commands.is_none() && self.picker.is_none() && self.search.is_none();
         let Some(clipboard) = &mut self.clipboard else {
@@ -924,12 +956,35 @@ impl Pane {
             Key::Named(NamedKey::ArrowUp) => commands.step(-1),
             Key::Named(NamedKey::ArrowDown) => commands.step(1),
             Key::Named(NamedKey::Tab) => commands.step(if self.modifiers.shift_key() { -1 } else { 1 }),
-            Key::Named(NamedKey::Backspace) => commands.backspace(self.modifiers.super_key()),
-            _ if self.modifiers.super_key() => return false,
+            Key::Named(NamedKey::Backspace) => commands.backspace(PLATFORM.erase_all(self.modifiers)),
+            _ if PLATFORM.command(self.modifiers) => return false,
             _ => if let Some(text) = text { commands.push(text); },
         }
         self.needs_redraw = true;
         true
+    }
+
+    fn run_shortcut(&mut self, shortcut: Shortcut) {
+        match shortcut {
+            Shortcut::Do(action) => self.perform_action(action),
+            Shortcut::Palette => self.command_open(),
+            Shortcut::CycleDirection => self.perform_action(match self.term.bidi_mode {
+                BidiMode::Auto => Action::DirectionLtr,
+                BidiMode::ForceLtr => Action::DirectionRtl,
+                BidiMode::ForceRtl => Action::DirectionAuto,
+            }),
+            Shortcut::SelectTab(number) => {
+                #[cfg(target_os = "macos")]
+                if let Some(window) = &self.window {
+                    use winit::platform::macos::WindowExtMacOS;
+                    window.select_tab_at_index(if number == 9 { window.num_tabs().saturating_sub(1) } else { number - 1 });
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = number;
+            }
+            Shortcut::Close => self.request = Some(Request::Close),
+            Shortcut::Quit => self.request = Some(Request::Quit),
+        }
     }
 
     fn perform_action(&mut self, action: Action) {
@@ -1078,6 +1133,13 @@ impl Pane {
             use winit::platform::macos::WindowAttributesExtMacOS;
             attrs.with_tabbing_identifier(&self.tab_group)
         };
+        // The X11 class and Wayland app id, which the desktop matches against
+        // arabic-term.desktop for the launcher icon and window grouping.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let attrs = {
+            use winit::platform::x11::WindowAttributesExtX11;
+            attrs.with_name("arabic-term", "arabic-term")
+        };
         let win = Arc::new(el.create_window(attrs).expect("create window"));
         win.set_ime_allowed(true); // needed for Arabic input methods
 
@@ -1186,8 +1248,8 @@ impl Pane {
                     return;
                 }
                 self.blink_reset();
-                let key = if self.modifiers.super_key() {
-                    crate::input::command_key(&event.logical_key, event.physical_key)
+                let key = if PLATFORM.chord(self.modifiers) {
+                    crate::input::command_key(&unmodified_key(&event), event.physical_key)
                 } else { event.logical_key.clone() };
                 if self.commands.is_some() && self.command_key(&key, event.text.as_deref()) { return; }
                 if self.picker.is_some() && self.picker_key(&key, event.text.as_deref()) {
@@ -1196,42 +1258,15 @@ impl Pane {
                 if self.search.is_some() && self.search_key(&key, event.text.as_deref()) {
                     return;
                 }
-                let sup = self.modifiers.super_key();
-                if sup {
-                    if let Key::Character(c) = &key {
-                        let action = match c.as_str() {
-                            "p" if self.modifiers.shift_key() => { self.command_open(); return; }
-                            "r" if self.modifiers.shift_key() => Some(Action::Reload),
-                            "t" if self.modifiers.shift_key() => Some(Action::Theme),
-                            "f" if self.modifiers.shift_key() => Some(Action::ArabicFonts),
-                            "t" => Some(Action::NewTab),
-                            "]" | "}" if self.modifiers.shift_key() => Some(Action::NextTab),
-                            "[" | "{" if self.modifiers.shift_key() => Some(Action::PreviousTab),
-                            digit @ ("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") => {
-                                #[cfg(target_os = "macos")]
-                                if let Some(window) = &self.window {
-                                    use winit::platform::macos::WindowExtMacOS;
-                                    let index = digit.parse::<usize>().unwrap() - 1;
-                                    window.select_tab_at_index(if index == 8 { window.num_tabs().saturating_sub(1) } else { index });
-                                }
-                                None
-                            }
-                            "f" => Some(Action::Search), "n" => Some(Action::NewWindow),
-                            "c" => Some(Action::Copy), "v" => Some(Action::Paste),
-                            "a" => Some(Action::SelectAll), "k" => Some(Action::ClearHistory),
-                            "+" | "=" => Some(Action::ZoomIn), "-" => Some(Action::ZoomOut),
-                            "0" => Some(Action::ZoomReset),
-                            "r" => Some(match self.term.bidi_mode {
-                                BidiMode::Auto => Action::DirectionLtr,
-                                BidiMode::ForceLtr => Action::DirectionRtl,
-                                BidiMode::ForceRtl => Action::DirectionAuto,
-                            }),
-                            "w" => { self.request = Some(Request::Close); None }
-                            "q" => { self.request = Some(Request::Quit); None }
-                            _ => None,
-                        };
-                        if let Some(action) = action { self.perform_action(action); }
-                    }
+                if let Some(shortcut) = PLATFORM.shortcut(&key, self.modifiers) {
+                    self.run_shortcut(shortcut);
+                    return;
+                }
+                // Command chords never reach the program on macOS. On Linux a
+                // Ctrl+Shift key that is not a shortcut still does, unless an
+                // overlay has the keyboard.
+                let overlay = self.commands.is_some() || self.picker.is_some() || self.search.is_some();
+                if PLATFORM.command(self.modifiers) && (PLATFORM == Platform::Mac || overlay) {
                     return;
                 }
                 // Shift + navigation keys drive our scrollback rather than
@@ -1299,8 +1334,9 @@ impl Pane {
                 }
                 match (button, state) {
                     (MouseButton::Left, ElementState::Pressed) => {
-                        // Cmd-click follows a link instead of selecting.
-                        if self.modifiers.super_key() {
+                        // Cmd-click (Ctrl-click on Linux) follows a link
+                        // instead of selecting.
+                        if PLATFORM.link(self.modifiers) {
                             if let Some((_, url)) = url_at(&self.term, at.line, at.cell) {
                                 open_url(&url);
                                 return;
@@ -1337,6 +1373,12 @@ impl Pane {
                     (MouseButton::Left, ElementState::Released) => {
                         self.selecting = false;
                         let t = self.selection.map(|s| selected_text(&self.term, s)).unwrap_or_default();
+                        #[cfg(all(unix, not(target_os = "macos")))]
+                        if !t.is_empty() {
+                            if let Some(cb) = &mut self.clipboard {
+                                let _ = crate::clipboard::set_primary(cb, t.clone());
+                            }
+                        }
                         if self.cfg.copy_on_select && !t.is_empty() {
                             if let Some(cb) = &mut self.clipboard {
                                 let _ = cb.set_text(t);
@@ -1344,7 +1386,7 @@ impl Pane {
                         }
                     }
                     (MouseButton::Middle, ElementState::Pressed) => {
-                        self.paste_clipboard();
+                        self.paste_primary();
                     }
                     _ => {}
                 }

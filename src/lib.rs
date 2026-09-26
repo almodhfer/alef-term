@@ -30,4 +30,5 @@ pub mod sixel;
 pub mod scroll;
 pub mod search;
 pub mod selection;
+pub mod shortcuts;
 pub mod term;

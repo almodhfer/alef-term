@@ -1,4 +1,6 @@
 //! A discoverable set of terminal actions, with a keyboard-driven filter.
+use crate::shortcuts::{Platform, PLATFORM};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     NewTab, NextTab, PreviousTab, NewWindow, Search, Theme, ArabicFonts, Reload, Copy, Paste, SelectAll, ClearHistory,
@@ -6,22 +8,24 @@ pub enum Action {
     ArabicFont(crate::font::ArabicFont),
 }
 
+/// Each action with its label and, for those without keys of their own, a
+/// note shown in place of the keys.
 pub const ACTIONS: &[(Action, &str, &str)] = &[
-    (Action::NewTab, "New tab", "Cmd T"),
-    (Action::NextTab, "Next tab", "Cmd Shift ]"),
-    (Action::PreviousTab, "Previous tab", "Cmd Shift ["),
-    (Action::NewWindow, "New window", "Cmd N"),
-    (Action::Search, "Search scrollback", "Cmd F"),
-    (Action::Theme, "Choose color theme", "Cmd Shift T"),
-    (Action::ArabicFonts, "Choose Arabic style", "Cmd Shift F"),
-    (Action::Reload, "Reload settings", "Cmd Shift R"),
-    (Action::Copy, "Copy selection", "Cmd C"),
-    (Action::Paste, "Paste clipboard", "Cmd V"),
-    (Action::SelectAll, "Select all text", "Cmd A"),
-    (Action::ClearHistory, "Clear scrollback", "Cmd K"),
-    (Action::ZoomIn, "Increase font size", "Cmd +"),
-    (Action::ZoomOut, "Decrease font size", "Cmd -"),
-    (Action::ZoomReset, "Reset font size", "Cmd 0"),
+    (Action::NewTab, "New tab", ""),
+    (Action::NextTab, "Next tab", ""),
+    (Action::PreviousTab, "Previous tab", ""),
+    (Action::NewWindow, "New window", ""),
+    (Action::Search, "Search scrollback", ""),
+    (Action::Theme, "Choose color theme", ""),
+    (Action::ArabicFonts, "Choose Arabic style", ""),
+    (Action::Reload, "Reload settings", ""),
+    (Action::Copy, "Copy selection", ""),
+    (Action::Paste, "Paste clipboard", ""),
+    (Action::SelectAll, "Select all text", ""),
+    (Action::ClearHistory, "Clear scrollback", ""),
+    (Action::ZoomIn, "Increase font size", ""),
+    (Action::ZoomOut, "Decrease font size", ""),
+    (Action::ZoomReset, "Reset font size", ""),
     (Action::ArabicFont(crate::font::ArabicFont::Naskh), "Arabic font: Noto Naskh", "Clear Naskh"),
     (Action::ArabicFont(crate::font::ArabicFont::Amiri), "Arabic font: Amiri", "Traditional"),
     (Action::ArabicFont(crate::font::ArabicFont::Scheherazade), "Arabic font: Scheherazade New", "Calligraphic"),
@@ -30,6 +34,20 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::DirectionLtr, "Text direction: left to right", ""),
     (Action::DirectionRtl, "Text direction: right to left", ""),
 ];
+
+/// Whether this build offers `action`. Tabs are macOS's native window tabs,
+/// and Geeza Pro ships only with macOS.
+pub fn offered(action: Action) -> bool {
+    PLATFORM == Platform::Mac
+        || !matches!(action, Action::NewTab | Action::NextTab | Action::PreviousTab
+            | Action::ArabicFont(crate::font::ArabicFont::Geeza))
+}
+
+/// Shown at the right of a palette entry: its keys, or else its note.
+pub fn hint(id: usize) -> &'static str {
+    let (action, _, note) = ACTIONS[id];
+    PLATFORM.hint(action).unwrap_or(note)
+}
 
 #[derive(Default, Debug)]
 pub struct CommandPalette {
@@ -40,9 +58,9 @@ pub struct CommandPalette {
 impl CommandPalette {
     pub fn matches(&self) -> Vec<usize> {
         let query = self.query.to_lowercase();
-        ACTIONS.iter().enumerate().filter(|(_, (_, label, hint))| {
-            let hay = format!("{label} {hint}").to_lowercase();
-            query.split_whitespace().all(|word| hay.contains(word))
+        ACTIONS.iter().enumerate().filter(|&(i, &(action, label, _))| {
+            let hay = format!("{label} {}", hint(i)).to_lowercase();
+            offered(action) && query.split_whitespace().all(|word| hay.contains(word))
         }).map(|(i, _)| i).collect()
     }
 

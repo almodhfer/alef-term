@@ -65,7 +65,9 @@ fn palette_filters_multiple_words_and_never_executes_a_stale_selection() {
     palette.step(1);
     assert_eq!(palette.current(), None);
     palette.backspace(true);
-    assert_eq!(palette.current(), Some(Action::NewTab));
+    // Tabs are macOS's native window tabs; elsewhere the list opens on windows.
+    let first = if cfg!(target_os = "macos") { Action::NewTab } else { Action::NewWindow };
+    assert_eq!(palette.current(), Some(first));
 }
 
 #[test]
@@ -175,7 +177,8 @@ fn locale_fallback_preserves_explicit_language_preferences() {
 fn arabic_font_commands_are_discoverable_by_style_and_family() {
     let mut palette = CommandPalette::default();
     palette.push("arabic font");
-    assert_eq!(palette.matches().len(), 4);
+    // Geeza Pro is offered only on macOS, which ships it.
+    assert_eq!(palette.matches().len(), if cfg!(target_os = "macos") { 4 } else { 3 });
     palette.backspace(true);
     palette.push("calligraphic");
     assert_eq!(palette.current(), Some(Action::ArabicFont(arabic_term::font::ArabicFont::Scheherazade)));

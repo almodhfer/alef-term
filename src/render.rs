@@ -768,7 +768,8 @@ impl Renderer {
             let fg = palette.highlight_fg(palette.fg, bg);
             let yy = y + (row as f32 + 2.0) * ch;
             canvas.fill_rect(x + cw * 0.5, yy, w - cw, ch, bg);
-            let (_, label, hint) = crate::commands::ACTIONS[id];
+            let (_, label, _) = crate::commands::ACTIONS[id];
+            let hint = crate::commands::hint(id);
             let hint_cols = if cols >= 36 { hint.chars().count() } else { 0 };
             let label = fit_cells(label, cols.saturating_sub(hint_cols + 2));
             self.draw_text(canvas, fonts, &label, x + cw, yy, fg, bg, term);

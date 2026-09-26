@@ -1,5 +1,7 @@
 .DEFAULT_GOAL := help
-.PHONY: help build bundle run restart test
+.PHONY: help build bundle install run restart test
+
+ifeq ($(shell uname -s),Darwin)
 
 help:
 	@printf '%s\n' \
@@ -9,9 +11,6 @@ help:
 	  'make restart  Rebuild and relaunch (closes current sessions)' \
 	  'make test     Run the test suite'
 
-build:
-	cargo build --release
-
 bundle:
 	@sh scripts/bundle.sh
 
@@ -20,6 +19,30 @@ run: bundle
 
 restart: bundle
 	@sh scripts/restart.sh
+
+else
+
+help:
+	@printf '%s\n' \
+	  'make build    Build the release executable' \
+	  'make install  Install for this user, with a launcher entry' \
+	  'make run      Build and open a window' \
+	  'make restart  Rebuild and relaunch (closes current sessions)' \
+	  'make test     Run the test suite'
+
+install:
+	@sh scripts/install-linux.sh
+
+run: build
+	@setsid nohup ./target/release/arabic-term </dev/null >/dev/null 2>&1 &
+
+restart: build
+	@sh scripts/restart-linux.sh
+
+endif
+
+build:
+	cargo build --release
 
 test:
 	cargo test

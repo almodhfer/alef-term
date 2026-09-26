@@ -65,9 +65,15 @@ fn logical_and_visual_maps_are_inverse() {
 #[test]
 fn arabic_letters_join_into_fewer_glyphs_via_ligatures() {
     let cols = 24;
-    // لا is a mandatory lam-alef ligature: two cells, one glyph.
+    // لا is a mandatory lam-alef ligature. Fonts build it either as one glyph
+    // (Geeza Pro) or as a lam and an alef in forms kept for the pair (Noto
+    // Naskh); either way neither letter keeps its standalone shape.
     let (l, _t) = layout("لا", cols, BidiMode::ForceLtr);
-    assert_eq!(l.glyphs.len(), 1, "lam-alef must form a single ligature glyph");
+    let (apart, _t) = layout("ل ا", cols, BidiMode::ForceLtr);
+    let standalone: Vec<u16> = apart.glyphs.iter().map(|g| g.glyph).collect();
+    assert!(l.glyphs.len() == 1 || l.glyphs.iter().all(|g| !standalone.contains(&g.glyph)),
+        "lam-alef must form a ligature: {:?} vs standalone {standalone:?}",
+        l.glyphs.iter().map(|g| g.glyph).collect::<Vec<_>>());
     // It still occupies both logical columns.
     assert_eq!(l.cell_at(0), 1);
     assert_eq!(l.cell_at(1), 0);

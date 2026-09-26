@@ -267,6 +267,7 @@ const FALLBACK_PATHS: &[(Slot, &str, u32)] = &[
     (Slot::Mono, "/System/Library/Fonts/Menlo.ttc", 0),
     (Slot::Mono, "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 0),
     (Slot::Arabic, "/System/Library/Fonts/GeezaPro.ttc", 0),
+    (Slot::Arabic, "/usr/share/fonts/truetype/noto/NotoNaskhArabic-Regular.ttf", 0),
     (Slot::Arabic, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
 ];
 

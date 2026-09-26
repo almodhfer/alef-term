@@ -98,13 +98,28 @@ These are deliberate choices, not omissions:
 
 ## Build and run
 
-From the project directory:
+Arabic Term runs on macOS and Linux. From the project directory on macOS:
 
 ```sh
 make run       # build and open the macOS app
 make restart   # rebuild, close existing sessions, and reopen the app
 make test      # run the test suite
 ```
+
+On Linux:
+
+```sh
+make install   # build, then install to ~/.local/bin with a launcher entry
+make run       # build and open a window from this checkout
+make restart   # rebuild, close existing sessions, and reopen
+make test      # run the test suite
+```
+
+`make install` puts the executable in `~/.local/bin`, an icon in
+`~/.local/share/icons`, and `arabic-term.desktop` in
+`~/.local/share/applications`, so Arabic Term appears in the application
+launcher and its windows are grouped under its icon. Run it again to update.
+`PREFIX` and `XDG_DATA_HOME` choose other locations.
 
 `make restart` works from inside Arabic Term too. It finishes the build before
 closing running Arabic Term app instances, including copies launched from the
@@ -124,14 +139,16 @@ the Dock, Spotlight and `open`. Or build and launch in one step with `cargo run 
 selects the development build even after `cargo build --release`; the development
 profile also enables optimization so scrolling and text shaping remain responsive.
 
-Requires Rust 1.85+ and macOS. Fonts are picked in this order:
+Requires Rust 1.85+. On Linux, drawing uses Vulkan, falling back to software
+rendering when no Vulkan driver is present; both X11 and Wayland support are
+built in. Fonts are picked in this order:
 
 | Slot | Preferred | Falls back to |
 | --- | --- | --- |
-| monospace | JetBrains Mono Nerd Font Mono (`~/Library/Fonts`) | Menlo, Monaco, Courier |
-| Arabic | Geeza Pro | Al Nile |
+| monospace | JetBrains Mono Nerd Font Mono (`~/Library/Fonts`, `~/.local/share/fonts`) | Menlo, DejaVu Sans Mono, Liberation Mono |
+| Arabic | Geeza Pro (macOS), Noto Naskh Arabic (Linux) | Noto Sans Arabic, Amiri, DejaVu Sans |
 | icons | whatever the monospace face covers | Symbols Nerd Font Mono |
-| emoji | Apple Color Emoji | |
+| emoji | Apple Color Emoji (macOS), Noto Color Emoji (Linux) | |
 
 A Nerd Font is preferred for monospace because it carries the private-use icons
 that status bars, file trees and workspace managers draw with; without one they
@@ -199,6 +216,9 @@ keeps the current font. Repeated switching reuses font data already in memory.
 shaper and renderer as the app. Set `OUT_DIR` to choose the output directory.
 
 ### Everyday use
+
+Shortcuts below are given for macOS; Linux uses `Ctrl Shift` instead of `Cmd`,
+as listed under [Linux](#linux).
 
 `Cmd Shift P` opens a searchable command palette. Type a few words, use the
 arrow keys, and press Enter. It includes tabs, windows, search, themes,
@@ -303,14 +323,38 @@ background overrides under `[theme.custom.dark]` and light ones under
 | `Shift` `Home` / `End` | oldest line / back to the live screen |
 | `Shift` `↑` / `↓` | previous / next prompt, when the shell marks them with OSC 133 |
 
+### Linux
+
+Linux desktops reserve Super for themselves, so shortcuts move to `Ctrl Shift`,
+as in GNOME Terminal, Konsole and kitty. Plain `Ctrl` keys still reach the
+program — `Ctrl C` interrupts, `Ctrl W` deletes a word — apart from zoom, and a
+`Ctrl Shift` key that is not a shortcut is passed on as well.
+
+| Key | Action |
+| --- | --- |
+| `Ctrl Shift C` / `Ctrl Shift V` | copy / paste |
+| `Ctrl Shift P` | command palette, which also holds the theme, Arabic font and reload commands |
+| `Ctrl Shift F` | search the scrollback; `Ctrl Shift G` steps like `Cmd G` |
+| `Ctrl Shift R` | cycle base direction: auto → LTR → RTL |
+| `Ctrl Shift A` / `Ctrl Shift K` | select all text / clear scrollback |
+| `Ctrl Shift N` / `Ctrl Shift W` / `Ctrl Shift Q` | new window / close window / quit |
+| `Ctrl` `+` / `-` / `0` | font size |
+| `Ctrl` + click | open the link under the pointer |
+| `Ctrl` + `Backspace` | clear the palette, picker or search field |
+| select / middle click | set / paste the primary selection |
+
+Tabs are macOS's native window tabs, so on Linux `Ctrl Shift T` opens a new
+window instead and the tab commands are left out of the palette, as is Geeza
+Pro, which only macOS ships.
+
 ## Known limitations
 
-- **Built and tested on macOS.** Fonts are found through the platform font
-  database, so the stack is not macOS-specific, but nothing else has been run on
-  Linux or Windows and the clipboard is whatever `arboard` provides.
-- **Little hands-on interactive use.** Everything is covered by tests or by
-  driving real programs over a PTY, but the window itself has had few hours of
-  real use; IME-based Arabic input is the least exercised path.
+- **Linux is new.** It has been run on Ubuntu 24.04 with GNOME on X11 and an
+  NVIDIA GPU; Wayland sessions and other GPUs have not been tried yet. Windows
+  is not supported.
+- **No tabs on Linux** yet; each session is its own window.
+- **IME composition is not drawn.** Committed text from an input method arrives
+  correctly, but the text being composed is not shown while it is typed.
 
 ## What's implemented
 
