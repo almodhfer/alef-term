@@ -230,6 +230,8 @@ pub struct Pane {
     blink_at: std::time::Instant,
     /// When the last bell rang, for the flash.
     bell_at: Option<std::time::Instant>,
+    /// When the last desktop notification went out, for rate limiting.
+    notified_at: Option<std::time::Instant>,
 }
 
 /// Clicks closer together than this on the same cell count as one gesture.
@@ -372,6 +374,7 @@ impl Pane {
             blink_on: true,
             blink_at: std::time::Instant::now() + BLINK_HALF,
             bell_at: None,
+            notified_at: None,
             frames: FramePacer::default(),
             pty_pending: false,
             refresh_millihertz: None,
@@ -715,9 +718,16 @@ impl Pane {
                 self.needs_redraw = true;
             }
         }
-        if std::mem::take(&mut self.term.bells) > 0 && self.cfg.visual_bell {
+        let bells = std::mem::take(&mut self.term.bells);
+        if bells > 0 && self.cfg.visual_bell {
             self.bell_at = Some(std::time::Instant::now());
             self.needs_redraw = true;
+        }
+        if bells > 0 && !self.focused {
+            self.request_attention();
+        }
+        for n in std::mem::take(&mut self.term.notifications) {
+            self.show_notification(n);
         }
         if let Some(text) = self.term.clipboard_write.take() {
             if let Some(cb) = &mut self.clipboard {
@@ -928,6 +938,41 @@ impl Pane {
         } else {
             let bytes = crate::input::paste_bytes(text, self.term.modes.contains(Modes::BRACKETED_PASTE));
             if !bytes.is_empty() { self.send(&bytes); }
+        }
+    }
+
+    /// Show a notification a program asked for. In a window the user is
+    /// looking at, a notice is enough; otherwise it goes to the desktop, at
+    /// most one a second so a runaway program cannot flood it, and the window
+    /// asks for attention.
+    fn show_notification(&mut self, n: crate::term::Notification) {
+        let title = if !n.title.is_empty() {
+            n.title
+        } else if self.term.title != "arabic-term" && !self.term.title.is_empty() {
+            self.term.title.clone()
+        } else {
+            "Arabic Term".to_string()
+        };
+        if self.focused {
+            let text = if n.body.is_empty() { title } else { format!("{title}: {}", n.body) };
+            self.notify(text.replace('\n', " "));
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self.notified_at.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(1)) {
+            log::debug!("dropping a notification: more than one a second");
+            return;
+        }
+        self.notified_at = Some(now);
+        crate::notify::show(&title, &n.body);
+        self.request_attention();
+    }
+
+    /// Mark the window as wanting attention: the dock bounces on macOS, and
+    /// the task bar highlights it on Linux. Focusing the window clears it.
+    fn request_attention(&self) {
+        if let Some(window) = &self.window {
+            window.request_user_attention(Some(winit::window::UserAttentionType::Informational));
         }
     }
 

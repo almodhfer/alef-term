@@ -259,6 +259,12 @@ Renderer selection, initial dimensions, and starting directory apply to new
 sessions. `Cmd 0` resets to the configured font size. Validate the file without
 opening a window with `arabic-term --check-config`.
 
+Programs can raise notifications — a finished build, an agent waiting for
+input — with OSC 9 (iTerm2's form), OSC 777 (urxvt's, also Ghostty's) or
+OSC 99 (kitty's). While the window has focus they appear as a notice inside
+it; otherwise they go to the desktop, at most one a second, and the window
+asks for attention, as it also does when the bell rings in the background.
+
 Set `working_directory = "~/projects"`, or use `--working-directory <path>`, to
 choose the initial folder. Otherwise a shell inherits the launch directory;
 Dock/Finder launches from `/` start at home. New sessions use the current shell's
@@ -378,7 +384,7 @@ hyperlinks (OSC 8), default colour set/query/reset (OSC 10/11/12, 104, 110–112
 programs can learn the background and pick a theme, light/dark scheme reports
 (`CSI ?996n`, and mode 2031 to be told when the theme changes), the working directory
 (OSC 7) and prompt marks (OSC 133) for jumping between commands, cursor shape (DECSCUSR:
-block, underline, bar, blinking or steady), a visual bell, clipboard writes (OSC 52), synchronized output (?2026) so
+block, underline, bar, blinking or steady), a visual bell, desktop notifications (OSC 9, 777 and 99), clipboard writes (OSC 52), synchronized output (?2026) so
 full-screen programs do not tear mid-repaint, mode reporting (DECRQM) so they
 can detect it, device status reports, mouse
 reporting (click, drag, any-motion, wheel; legacy and SGR), the kitty

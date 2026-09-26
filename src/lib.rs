@@ -23,6 +23,7 @@ pub mod keys;
 pub mod kitty_graphics;
 pub mod layout;
 pub mod mouse;
+pub mod notify;
 pub mod picker;
 pub mod pty;
 pub mod render;

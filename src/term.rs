@@ -88,6 +88,20 @@ pub struct CursorStyle {
     pub blink: Option<bool>,
 }
 
+/// A desktop notification a program asked for (OSC 9, 777 or 99). An empty
+/// title leaves the choice to the UI.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Notification {
+    pub title: String,
+    pub body: String,
+}
+
+/// Bounds on what one program can ask to show: a runaway sequence must not
+/// grow memory or bury the desktop.
+const NOTIFY_TITLE_MAX: usize = 256;
+const NOTIFY_BODY_MAX: usize = 1024;
+const NOTIFY_QUEUE_MAX: usize = 8;
+
 pub struct Terminal {
     pub grid: Grid,
     pub modes: Modes,
@@ -126,6 +140,10 @@ pub struct Terminal {
     /// Text an application asked to place on the clipboard via OSC 52. The UI
     /// drains this; reads are refused, see `osc_dispatch`.
     pub clipboard_write: Option<String>,
+    /// Notifications waiting for the UI, oldest first.
+    pub notifications: Vec<Notification>,
+    /// An OSC 99 notification still receiving chunks, with its id.
+    kitty_notification: Option<(String, Notification)>,
     /// Current OSC 8 hyperlink, applied to printed cells.
     link: Option<Box<str>>,
     /// True when charset G0 is the DEC line-drawing set (ESC ( 0).
@@ -156,6 +174,8 @@ impl Terminal {
             dcs_is_sixel: false,
             kitty_keyboard: Vec::new(),
             clipboard_write: None,
+            notifications: Vec::new(),
+            kitty_notification: None,
             link: None,
             dec_graphics: false,
             tab_stops: default_tabs(cols),
@@ -251,6 +271,52 @@ impl Terminal {
 
     /// Answer an OSC colour query in xterm's `rgb:rrrr/gggg/bbbb` form,
     /// terminated the same way the query was.
+    fn push_notification(&mut self, n: Notification) {
+        if (!n.title.is_empty() || !n.body.is_empty()) && self.notifications.len() < NOTIFY_QUEUE_MAX {
+            self.notifications.push(n);
+        }
+    }
+
+    /// OSC 99, kitty's notification protocol: `99 ; key=value:… ; payload`.
+    /// What matters for showing one is handled: the id that ties chunks
+    /// together (`i`), whether more follow (`d=0`), which part the payload
+    /// fills (`p=title`, the default, or `p=body`), and base64 (`e=1`).
+    /// Other parts, such as capability queries, are ignored.
+    fn kitty_notification(&mut self, params: &[&[u8]]) {
+        let meta = String::from_utf8_lossy(params.get(1).copied().unwrap_or_default()).into_owned();
+        let (mut id, mut done, mut part, mut base64) = ("", true, "title", false);
+        for pair in meta.split(':') {
+            match pair.split_once('=') {
+                Some(("i", v)) => id = v,
+                Some(("d", v)) => done = v != "0",
+                Some(("p", v)) => part = v,
+                Some(("e", v)) => base64 = v == "1",
+                _ => {}
+            }
+        }
+        if part != "title" && part != "body" {
+            return;
+        }
+        let raw = params.get(2..).unwrap_or_default().join(&b';');
+        let Some(bytes) = (if base64 { base64_decode(&raw) } else { Some(raw) }) else { return };
+        let mut pending = match self.kitty_notification.take() {
+            Some((pending_id, n)) if pending_id == id => n,
+            _ => Notification::default(),
+        };
+        let (field, max) = if part == "title" {
+            (&mut pending.title, NOTIFY_TITLE_MAX)
+        } else {
+            (&mut pending.body, NOTIFY_BODY_MAX)
+        };
+        field.push_str(&notification_text(&bytes, max));
+        *field = field.chars().take(max).collect();
+        if done {
+            self.push_notification(pending);
+        } else {
+            self.kitty_notification = Some((id.to_string(), pending));
+        }
+    }
+
     fn reply_color(&mut self, cmd: &str, c: Rgb, bell_terminated: bool) {
         let end = if bell_terminated { "\x07" } else { "\x1b\\" };
         let s = format!(
@@ -956,6 +1022,29 @@ impl Perform for Terminal {
                     None => log::debug!("ignoring malformed OSC 52 payload"),
                 }
             }
+            b"9" => {
+                // iTerm2's notification: OSC 9 ; message. ConEmu reuses OSC 9
+                // with a small number for other commands — 9;4 reports
+                // progress — and those are not messages.
+                let Some(first) = params.get(1) else { return };
+                let command = std::str::from_utf8(first).ok().and_then(|s| s.parse::<u8>().ok());
+                if command.is_some_and(|n| (1..=12).contains(&n)) {
+                    return;
+                }
+                // The parser splits at every `;`, including those in the text.
+                let body = notification_text(&params[1..].join(&b';'), NOTIFY_BODY_MAX);
+                self.push_notification(Notification { title: String::new(), body });
+            }
+            b"777" => {
+                // rxvt-unicode's, also Ghostty's: OSC 777 ; notify ; title ; body.
+                if params.get(1) != Some(&&b"notify"[..]) {
+                    return;
+                }
+                let title = notification_text(params.get(2).copied().unwrap_or_default(), NOTIFY_TITLE_MAX);
+                let body = notification_text(&params.get(3..).unwrap_or_default().join(&b';'), NOTIFY_BODY_MAX);
+                self.push_notification(Notification { title, body });
+            }
+            b"99" => self.kitty_notification(params),
             b"8" => {
                 // OSC 8 ; params ; URI  (empty URI closes the link)
                 self.link = match params.get(2) {
@@ -1285,6 +1374,12 @@ impl Perform for Terminal {
 }
 
 /// Decode standard base64, rejecting anything malformed.
+/// Notification text from a program: valid UTF-8, no control characters
+/// apart from line breaks, and at most `max` characters.
+fn notification_text(bytes: &[u8], max: usize) -> String {
+    String::from_utf8_lossy(bytes).chars().filter(|&c| c == '\n' || !c.is_control()).take(max).collect()
+}
+
 fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
     #[inline]
     fn val(c: u8) -> Option<u32> {
