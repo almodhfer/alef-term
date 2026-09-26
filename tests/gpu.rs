@@ -54,9 +54,15 @@ fn check_gpu_frame(family: Option<&str>) {
     // Switch with the same layouts and GPU atlas still cached.
     let mut commands = arabic_term::commands::CommandPalette::default();
     commands.push("settings");
+    let titles = vec!["Shell 1".to_string(), "مشاريع".to_string(), "htop".to_string()];
+    let tabs = arabic_term::render::TabBar { titles: &titles, active: 1 };
     for palette in [Palette::dark(), Palette::light()] {
         term.set_palette(palette);
-        for opts in [DrawOpts::default(), DrawOpts { commands: Some(&commands), notice: Some("Settings reloaded"), ..DrawOpts::default() }] {
+        for opts in [
+            DrawOpts::default(),
+            DrawOpts { commands: Some(&commands), notice: Some("Settings reloaded"), ..DrawOpts::default() },
+            DrawOpts { tabs: Some(tabs), ..DrawOpts::default() },
+        ] {
             let mut cpu = vec![0u32; w * h];
             let mut canvas = Canvas { buf: &mut cpu, width: w, height: h };
             draw(&mut canvas, &term, &mut fonts, &mut renderer, &opts);

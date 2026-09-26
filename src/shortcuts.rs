@@ -5,7 +5,7 @@
 //! use Ctrl+Shift — the convention of GNOME Terminal, Konsole and kitty — and
 //! plain Ctrl keys still reach the program, apart from Ctrl +, - and 0 for zoom.
 use crate::commands::Action;
-use winit::keyboard::{Key, ModifiersState};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Platform { Mac, Linux }
@@ -62,10 +62,11 @@ impl Platform {
 
     /// The shortcut on `key`, as normalised by [`crate::input::command_key`].
     pub fn shortcut(self, key: &Key, m: ModifiersState) -> Option<Shortcut> {
-        let Key::Character(c) = key else { return None };
-        match self {
-            Platform::Mac => mac(c.as_str(), m),
-            Platform::Linux => linux(c.as_str(), m),
+        match (self, key) {
+            (Platform::Mac, Key::Character(c)) => mac(c.as_str(), m),
+            (Platform::Linux, Key::Character(c)) => linux(c.as_str(), m),
+            (Platform::Linux, Key::Named(named)) => linux_tabs(*named, m),
+            _ => None,
         }
     }
 
@@ -89,6 +90,8 @@ impl Platform {
             (Platform::Mac, ZoomOut) => "Cmd -",
             (Platform::Mac, ZoomReset) => "Cmd 0",
             (Platform::Linux, NewTab) => "Ctrl Shift T",
+            (Platform::Linux, NextTab) => "Ctrl Tab",
+            (Platform::Linux, PreviousTab) => "Ctrl Shift Tab",
             (Platform::Linux, NewWindow) => "Ctrl Shift N",
             (Platform::Linux, Search) => "Ctrl Shift F",
             (Platform::Linux, Copy) => "Ctrl Shift C",
@@ -159,6 +162,19 @@ fn linux(c: &str, m: ModifiersState) -> Option<Shortcut> {
         "r" => Shortcut::CycleDirection,
         "w" => Shortcut::Close,
         "q" => Shortcut::Quit,
+        _ => return Some(Shortcut::SelectTab(tab(c)?)),
+    })
+}
+
+/// Stepping through tabs, on the keys browsers and GNOME Terminal use.
+fn linux_tabs(key: NamedKey, m: ModifiersState) -> Option<Shortcut> {
+    let ctrl = ModifiersState::CONTROL;
+    let ctrl_shift = ModifiersState::CONTROL | ModifiersState::SHIFT;
+    Some(match key {
+        NamedKey::Tab if m == ctrl => Shortcut::Do(Action::NextTab),
+        NamedKey::Tab if m == ctrl_shift => Shortcut::Do(Action::PreviousTab),
+        NamedKey::PageDown if m == ctrl => Shortcut::Do(Action::NextTab),
+        NamedKey::PageUp if m == ctrl => Shortcut::Do(Action::PreviousTab),
         _ => return None,
     })
 }

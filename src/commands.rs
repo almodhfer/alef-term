@@ -35,12 +35,9 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::DirectionRtl, "Text direction: right to left", ""),
 ];
 
-/// Whether this build offers `action`. Tabs are macOS's native window tabs,
-/// and Geeza Pro ships only with macOS.
+/// Whether this build offers `action`: Geeza Pro ships only with macOS.
 pub fn offered(action: Action) -> bool {
-    PLATFORM == Platform::Mac
-        || !matches!(action, Action::NewTab | Action::NextTab | Action::PreviousTab
-            | Action::ArabicFont(crate::font::ArabicFont::Geeza))
+    PLATFORM == Platform::Mac || action != Action::ArabicFont(crate::font::ArabicFont::Geeza)
 }
 
 /// Shown at the right of a palette entry: its keys, or else its note.

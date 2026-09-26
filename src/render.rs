@@ -48,6 +48,20 @@ pub struct DrawOpts<'a> {
     pub picker: Option<PickerView<'a>>,
     pub commands: Option<&'a crate::commands::CommandPalette>,
     pub notice: Option<&'a str>,
+    /// The window's tabs, when it has more than one.
+    pub tabs: Option<TabBar<'a>>,
+}
+
+/// The tabs of a window, for the bar across its top.
+#[derive(Clone, Copy, Debug)]
+pub struct TabBar<'a> {
+    pub titles: &'a [String],
+    pub active: usize,
+}
+
+/// Height of the tab bar: one text row. The grid starts below it.
+pub fn tab_bar_height(fonts: &Fonts) -> f32 {
+    fonts.cell_h.round()
 }
 
 impl Default for DrawOpts<'_> {
@@ -65,6 +79,7 @@ impl Default for DrawOpts<'_> {
             picker: None,
             commands: None,
             notice: None,
+            tabs: None,
         }
     }
 }
@@ -418,6 +433,8 @@ impl Renderer {
         let baseline = fonts.baseline;
         let cols = term.grid.cols;
         let rows = term.grid.rows;
+        let bar_h = if opts.tabs.is_some() { tab_bar_height(fonts) } else { 0.0 };
+        let grid_top = self.pad_y + bar_h;
 
         let mut keys: Vec<u64> = Vec::with_capacity(rows + 1);
         self.live.clear();
@@ -468,7 +485,7 @@ impl Renderer {
                 self.cache.insert(key, fresh);
             }
             let layout = self.cache.get(&key).expect("just inserted");
-            let y = self.pad_y + (ri as f32 + frac) * cell_h;
+            let y = grid_top + (ri as f32 + frac) * cell_h;
 
             // Resolve each logical cell once so text, borders and decorations
             // share the same inverse, dim and highlight colours. Selection
@@ -604,7 +621,7 @@ impl Renderer {
             if rel >= rows as u64 + 64 {
                 continue;
             }
-            let y = self.pad_y + (rel as f32 + frac) * cell_h;
+            let y = grid_top + (rel as f32 + frac) * cell_h;
             let x = self.pad_x + placed.col as f32 * cell_w;
             if y > canvas.height() as f32 {
                 continue;
@@ -623,7 +640,7 @@ impl Renderer {
                 let scrolled = term.grid.view_offset as f32;
                 let max_scroll = (total - rows) as f32;
                 let t = 1.0 - (scrolled / max_scroll.max(1.0)).clamp(0.0, 1.0);
-                let y = self.pad_y + t * (track_h - thumb_h);
+                let y = grid_top + t * (track_h - thumb_h);
                 let w = 4.0;
                 let x = canvas.width() as f32 - w - 2.0;
                 let a = self.scrollbar_alpha.clamp(0.0, 1.0);
@@ -636,6 +653,11 @@ impl Renderer {
                 );
                 canvas.fill_rect(x, y, w, thumb_h, col);
             }
+        }
+
+        // --- tab bar, over the edge of a row scrolling out at the top ---
+        if let Some(tabs) = opts.tabs {
+            self.draw_tab_bar(canvas, fonts, term, &tabs, bar_h);
         }
 
         // --- search bar, top right, drawn over everything ---
@@ -654,7 +676,7 @@ impl Renderer {
             let w = pad * 2.0 + qw + cell_w + cw_ + cell_w;
             let h = cell_h + pad * 2.0;
             let x0 = canvas.width() as f32 - w - 8.0;
-            let y0 = 6.0;
+            let y0 = bar_h + 6.0;
             canvas.fill_rect(x0 - 1.0, y0 - 1.0, w + 2.0, h + 2.0, palette.cursor);
             canvas.fill_rect(x0, y0, w, h, palette.bg);
             let ty = y0 + pad;
@@ -711,7 +733,7 @@ impl Renderer {
                 let col = layout.column_of(cur.col.min(cols.saturating_sub(1)));
                 let cursor_rtl = layout.is_rtl(cur.col);
                 let x = self.pad_x + col as f32 * cell_w;
-                let y = self.pad_y + (cur.row as f32 + frac) * cell_h;
+                let y = grid_top + (cur.row as f32 + frac) * cell_h;
                 let shape = match term.cursor_style.blink {
                     // An application that set a style gets its shape.
                     Some(_) => term.cursor_style.shape,
@@ -764,6 +786,40 @@ impl Renderer {
 const PICKER_HINT: &str = "↑↓ choose · Enter apply · Esc cancel";
 
 impl Renderer {
+    /// One tab per session, sharing the width. The active tab takes the
+    /// terminal's background and opens onto it, so it reads as the page in
+    /// front; the others sit on a slightly tinted strip.
+    fn draw_tab_bar<T: Target>(&mut self, canvas: &mut T, fonts: &mut Fonts, term: &Terminal, bar: &TabBar, height: f32) {
+        let palette = &term.palette;
+        let (cell_w, cell_h) = (fonts.cell_w, fonts.cell_h);
+        let width = canvas.width() as f32;
+        let strip = crate::color::mix(palette.bg, palette.fg, 24);
+        let rule = crate::color::mix(palette.bg, palette.fg, 64);
+        canvas.fill_rect(0.0, 0.0, width, height, strip);
+        let n = bar.titles.len().max(1);
+        let span = |i: usize| {
+            let x = (i as f32 * width / n as f32).round();
+            (x, ((i + 1) as f32 * width / n as f32).round() - x)
+        };
+        for (i, title) in bar.titles.iter().enumerate() {
+            let (x, w) = span(i);
+            let active = i == bar.active;
+            let (bg, fg) = if active { (palette.bg, palette.fg) } else { (strip, palette.fg.dimmed(strip)) };
+            if active {
+                canvas.fill_rect(x, 0.0, w, height, bg);
+                canvas.fill_rect(x, 0.0, w, 2.0, palette.cursor);
+            } else if i + 1 < n && i + 1 != bar.active {
+                canvas.fill_rect(x + w - 1.0, height * 0.25, 1.0, height * 0.5, rule);
+            }
+            let row = fit_cells(title, ((w / cell_w) as usize).saturating_sub(2));
+            let tx = x + ((w - row.cells.len() as f32 * cell_w) / 2.0).max(cell_w);
+            self.draw_text(canvas, fonts, &row, tx, ((height - cell_h) / 2.0).round(), fg, bg, term);
+        }
+        let (ax, aw) = span(bar.active.min(n - 1));
+        canvas.fill_rect(0.0, height - 1.0, ax, 1.0, rule);
+        canvas.fill_rect(ax + aw, height - 1.0, width - ax - aw, 1.0, rule);
+    }
+
     fn draw_commands<T: Target>(&mut self, canvas: &mut T, fonts: &mut Fonts, term: &Terminal,
         p: &crate::commands::CommandPalette) {
         let palette = &term.palette;

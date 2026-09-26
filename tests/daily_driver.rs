@@ -65,9 +65,7 @@ fn palette_filters_multiple_words_and_never_executes_a_stale_selection() {
     palette.step(1);
     assert_eq!(palette.current(), None);
     palette.backspace(true);
-    // Tabs are macOS's native window tabs; elsewhere the list opens on windows.
-    let first = if cfg!(target_os = "macos") { Action::NewTab } else { Action::NewWindow };
-    assert_eq!(palette.current(), Some(first));
+    assert_eq!(palette.current(), Some(Action::NewTab));
 }
 
 #[test]

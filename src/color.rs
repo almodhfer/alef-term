@@ -96,7 +96,7 @@ const fn hex(v: u32) -> Rgb {
 }
 
 /// `a` moved `t`/256 of the way to `b`.
-const fn mix(a: Rgb, b: Rgb, t: u32) -> Rgb {
+pub const fn mix(a: Rgb, b: Rgb, t: u32) -> Rgb {
     Rgb(
         ((a.0 as u32 * (256 - t) + b.0 as u32 * t) / 256) as u8,
         ((a.1 as u32 * (256 - t) + b.1 as u32 * t) / 256) as u8,

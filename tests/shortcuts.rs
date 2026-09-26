@@ -2,7 +2,7 @@
 //! Linux leaves plain Ctrl keys to the program.
 use arabic_term::commands::{Action, ACTIONS};
 use arabic_term::shortcuts::{Platform, Shortcut};
-use winit::keyboard::{Key, ModifiersState};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 fn key(s: &str) -> Key {
     Key::Character(s.into())
@@ -28,8 +28,8 @@ fn palette_hints_name_keys_that_perform_their_action() {
                     k => last = k,
                 }
             }
-            assert_eq!(platform.shortcut(&key(&last.to_lowercase()), mods), Some(Shortcut::Do(action)),
-                "{platform:?}: {hint}");
+            let k = if last == "Tab" { Key::Named(NamedKey::Tab) } else { key(&last.to_lowercase()) };
+            assert_eq!(platform.shortcut(&k, mods), Some(Shortcut::Do(action)), "{platform:?}: {hint}");
         }
     }
 }
@@ -63,4 +63,18 @@ fn linux_shortcuts_use_ctrl_shift_and_leave_ctrl_to_programs() {
     assert_eq!(linux.shortcut(&key("c"), CMD), None, "Super belongs to the desktop");
     assert!(linux.command(CTRL | SHIFT) && !linux.command(CTRL));
     assert!(linux.link(CTRL) && !linux.link(CMD));
+}
+
+#[test]
+fn linux_tabs_step_with_ctrl_tab_and_page_keys_and_jump_by_number() {
+    let linux = Platform::Linux;
+    let named = |k| Key::Named(k);
+    assert_eq!(linux.shortcut(&named(NamedKey::Tab), CTRL), Some(Shortcut::Do(Action::NextTab)));
+    assert_eq!(linux.shortcut(&named(NamedKey::Tab), CTRL | SHIFT), Some(Shortcut::Do(Action::PreviousTab)));
+    assert_eq!(linux.shortcut(&named(NamedKey::PageDown), CTRL), Some(Shortcut::Do(Action::NextTab)));
+    assert_eq!(linux.shortcut(&named(NamedKey::PageUp), CTRL), Some(Shortcut::Do(Action::PreviousTab)));
+    assert_eq!(linux.shortcut(&key("3"), CTRL | SHIFT), Some(Shortcut::SelectTab(3)));
+    assert_eq!(linux.shortcut(&named(NamedKey::Tab), ModifiersState::empty()), None, "a plain Tab is the program's");
+    assert_eq!(linux.shortcut(&key("3"), CTRL), None);
+    assert_eq!(Platform::Mac.shortcut(&named(NamedKey::Tab), CTRL), None, "macOS keeps its own tab keys");
 }

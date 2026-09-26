@@ -350,22 +350,27 @@ program — `Ctrl C` interrupts, `Ctrl W` deletes a word — apart from zoom, an
 | `Ctrl Shift F` | search the scrollback; `Ctrl Shift G` steps like `Cmd G` |
 | `Ctrl Shift R` | cycle base direction: auto → LTR → RTL |
 | `Ctrl Shift A` / `Ctrl Shift K` | select all text / clear scrollback |
-| `Ctrl Shift N` / `Ctrl Shift W` / `Ctrl Shift Q` | new window / close window / quit |
+| `Ctrl Shift T` / `Ctrl Shift N` | new tab / new window |
+| `Ctrl Shift W` / `Ctrl Shift Q` | close tab / quit |
+| `Ctrl Tab` / `Ctrl Shift Tab` | next / previous tab; `Ctrl PgDn` / `Ctrl PgUp` too |
+| `Ctrl Shift 1` … `Ctrl Shift 9` | choose a tab; 9 selects the last |
 | `Ctrl` `+` / `-` / `0` | font size |
 | `Ctrl` + click | open the link under the pointer |
 | `Ctrl` + `Backspace` | clear the palette, picker or search field |
 | select / middle click | set / paste the primary selection |
 
-Tabs are macOS's native window tabs, so on Linux `Ctrl Shift T` opens a new
-window instead and the tab commands are left out of the palette, as is Geeza
-Pro, which only macOS ships.
+On macOS tabs are the system's own window tabs. Linux has no such thing, so
+Arabic Term draws them: a window with more than one tab shows a bar across its
+top, one tab per session sharing the width, and a click on a tab shows it.
+Hidden tabs keep reading their shell's output but draw nothing until shown.
+Closing the window closes all its tabs. Geeza Pro, which only macOS ships, is
+left out of the palette.
 
 ## Known limitations
 
 - **Linux is new.** It has been run on Ubuntu 24.04 with GNOME on X11 and an
   NVIDIA GPU; Wayland sessions and other GPUs have not been tried yet. Windows
   is not supported.
-- **No tabs on Linux** yet; each session is its own window.
 - **Indic scripts are drawn one syllable per cell.** Devanagari and its
   relatives are legible but look spaced out, as in most terminals.
 - **IME composition is not drawn.** Committed text from an input method arrives

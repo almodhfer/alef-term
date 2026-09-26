@@ -7,7 +7,7 @@ use crate::pty::Pty;
 use crate::gpu::Gpu;
 use crate::color::{find_theme, Theme};
 use crate::picker::ThemePicker;
-use crate::render::{Canvas, DrawOpts, PickerView, Renderer, SearchBar};
+use crate::render::{Canvas, DrawOpts, PickerView, Renderer, SearchBar, TabBar};
 use crate::search::{Index, Search};
 use crate::selection::{logical_line, selected_text, url_at, word_at, Selection, Span};
 use crate::shortcuts::{Platform, Shortcut, PLATFORM};
@@ -161,6 +161,9 @@ enum Request {
     SetTheme(&'static str),
     SetArabicFont(crate::font::ArabicFont),
     Reload,
+    /// Show the window's tab at this index. On Linux, where the application
+    /// draws tabs itself, the tabs of a window share it.
+    ShowTab(usize),
 }
 
 /// One window: its terminal, shell, fonts and everything drawn in it.
@@ -232,6 +235,11 @@ pub struct Pane {
     bell_at: Option<std::time::Instant>,
     /// When the last desktop notification went out, for rate limiting.
     notified_at: Option<std::time::Instant>,
+    /// Titles of the tabs in this window and which one is on show, while it
+    /// has more than one; set by the application.
+    tabs: Option<(Vec<String>, usize)>,
+    /// Where the pointer is, in physical pixels.
+    pointer: PhysicalPosition<f64>,
 }
 
 /// Clicks closer together than this on the same cell count as one gesture.
@@ -375,6 +383,8 @@ impl Pane {
             blink_at: std::time::Instant::now() + BLINK_HALF,
             bell_at: None,
             notified_at: None,
+            tabs: None,
+            pointer: PhysicalPosition::new(0.0, 0.0),
             frames: FramePacer::default(),
             pty_pending: false,
             refresh_millihertz: None,
@@ -674,7 +684,7 @@ impl Pane {
         let (cw, ch) = self.cell_size();
         let (px, py) = (self.renderer.pad_x, self.renderer.pad_y);
         let cols = (((size.width as f32 - 2.0 * px) / cw).floor() as usize).max(1);
-        let rows = (((size.height as f32 - 2.0 * py) / ch).floor() as usize).max(1);
+        let rows = (((size.height as f32 - 2.0 * py - self.tab_bar_height()) / ch).floor() as usize).max(1);
         if cols != self.term.grid.cols || rows != self.term.grid.rows {
             if cols != self.term.grid.cols {
                 // Lines move when the width changes; a selection anchored to
@@ -873,7 +883,7 @@ impl Pane {
     /// about — it has no idea our scrollback exists.
     fn hit_test(&self, pos: PhysicalPosition<f64>) -> Hit {
         let (cw, ch) = self.cell_size();
-        let (px, py) = (self.renderer.pad_x, self.renderer.pad_y);
+        let (px, py) = (self.renderer.pad_x, self.renderer.pad_y + self.tab_bar_height());
         let row = (((pos.y as f32 - py) / ch).floor().max(0.0) as usize)
             .min(self.term.grid.rows.saturating_sub(1));
         let col = (((pos.x as f32 - px) / cw).floor().max(0.0) as usize)
@@ -887,6 +897,73 @@ impl Pane {
             line: (self.term.grid.viewport_top() + row as isize).max(0) as usize,
             cell,
         }
+    }
+
+    fn tab_bar_height(&self) -> f32 {
+        if self.tabs.is_some() { crate::render::tab_bar_height(&self.fonts) } else { 0.0 }
+    }
+
+    /// The title shown for this session: the program's, or the session name.
+    fn tab_title(&self) -> String {
+        if self.term.title.is_empty() || self.term.title == "arabic-term" {
+            self.session_title.clone()
+        } else {
+            self.term.title.clone()
+        }
+    }
+
+    fn set_tabs(&mut self, tabs: Option<(Vec<String>, usize)>) {
+        if tabs == self.tabs {
+            return;
+        }
+        let bar_changed = tabs.is_some() != self.tabs.is_some();
+        self.tabs = tabs;
+        if self.output.is_some() {
+            if bar_changed {
+                self.reflow();
+            }
+            self.needs_redraw = true;
+        }
+    }
+
+    /// The tab under `pos`, when it is on the tab bar.
+    fn tab_at(&self, pos: PhysicalPosition<f64>) -> Option<usize> {
+        let (titles, _) = self.tabs.as_ref()?;
+        if pos.y as f32 >= self.tab_bar_height() {
+            return None;
+        }
+        let width = self.window.as_ref()?.inner_size().width.max(1) as f64;
+        Some(((pos.x.max(0.0) / width * titles.len() as f64) as usize).min(titles.len() - 1))
+    }
+
+    /// Ask for the tab `step` along from this one, wrapping at the ends.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn step_tab(&mut self, step: isize) {
+        if let Some((titles, active)) = &self.tabs {
+            let index = (*active as isize + step).rem_euclid(titles.len() as isize) as usize;
+            self.request = Some(Request::ShowTab(index));
+        }
+    }
+
+    /// Ask for tab `number`, counting from 1; 9 is always the last.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn select_tab(&mut self, number: usize) {
+        if let Some((titles, _)) = &self.tabs {
+            let index = if number == 9 { titles.len() - 1 } else { number - 1 };
+            if index < titles.len() {
+                self.request = Some(Request::ShowTab(index));
+            }
+        }
+    }
+
+    /// Focus arriving or leaving, from the window or from switching tabs,
+    /// reported to programs that asked for it.
+    fn set_focus(&mut self, focused: bool) {
+        self.focused = focused;
+        if self.term.modes.contains(Modes::FOCUS_EVENTS) {
+            self.write_pty(if focused { b"\x1b[I" } else { b"\x1b[O" });
+        }
+        self.needs_redraw = true;
     }
 
     /// Middle-click paste: the primary selection on X11 and Wayland, the
@@ -1025,7 +1102,7 @@ impl Pane {
                     window.select_tab_at_index(if number == 9 { window.num_tabs().saturating_sub(1) } else { number - 1 });
                 }
                 #[cfg(not(target_os = "macos"))]
-                let _ = number;
+                self.select_tab(number);
             }
             Shortcut::Close => self.request = Some(Request::Close),
             Shortcut::Quit => self.request = Some(Request::Quit),
@@ -1042,6 +1119,8 @@ impl Pane {
                     if action == Action::NextTab { window.select_next_tab(); }
                     else { window.select_previous_tab(); }
                 }
+                #[cfg(not(target_os = "macos"))]
+                self.step_tab(if action == Action::NextTab { 1 } else { -1 });
             }
             Action::NewWindow => self.request = Some(Request::NewWindow),
             Action::Search => self.search_open(),
@@ -1207,14 +1286,21 @@ impl Pane {
                 }
             }
         };
-        self.output = Some(match gpu {
+        let output = match gpu {
             Some(g) => Output::Gpu(g),
             None => {
                 let ctx = softbuffer::Context::new(win.clone()).expect("softbuffer context");
                 Output::Software(softbuffer::Surface::new(&ctx, win.clone()).expect("softbuffer surface"))
             }
-        });
+        };
         self.atlas_generation = self.fonts.generation();
+        self.start(win, output);
+    }
+
+    /// Draw in `win` through `output` and start the shell. A new window comes
+    /// here from `open`; a new tab brings its window and that window's surface.
+    fn start(&mut self, win: Arc<Window>, output: Output) {
+        self.output = Some(output);
         self.window = Some(win);
 
         let (cw, ch) = self.cell_size();
@@ -1253,13 +1339,7 @@ impl Pane {
                 self.occluded = hidden;
                 if !hidden { self.needs_redraw = true; }
             }
-            WindowEvent::Focused(f) => {
-                self.focused = f;
-                if self.term.modes.contains(Modes::FOCUS_EVENTS) {
-                    self.write_pty(if f { b"\x1b[I" } else { b"\x1b[O" });
-                }
-                self.needs_redraw = true;
-            }
+            WindowEvent::Focused(f) => self.set_focus(f),
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                 self.set_display_scale(scale_factor as f32);
                 self.reflow();
@@ -1359,6 +1439,12 @@ impl Pane {
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 if self.commands.is_some() || self.picker.is_some() { return; }
+                if let Some(index) = self.tab_at(self.pointer) {
+                    if state == ElementState::Pressed && button == MouseButton::Left {
+                        self.request = Some(Request::ShowTab(index));
+                    }
+                    return;
+                }
                 let bypass = self.mouse_bypass || self.modifiers.shift_key();
                 self.mouse_bypass = state == ElementState::Pressed && bypass;
                 let at = self.mouse_at;
@@ -1437,6 +1523,7 @@ impl Pane {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
+                self.pointer = position;
                 if self.commands.is_some() || self.picker.is_some() { return; }
                 let hit = self.hit_test(position);
                 if hit != self.mouse_at {
@@ -1592,6 +1679,7 @@ impl Pane {
                     picker,
                     commands: self.commands.as_ref(),
                     notice: self.notice.as_ref().map(|(text, _)| text.as_str()),
+                    tabs: self.tabs.as_ref().map(|(titles, active)| TabBar { titles, active: *active }),
                 };
                 let t2;
                 match output {
@@ -1682,7 +1770,8 @@ impl Pane {
             self.bell_at = None;
         }
         let animating = animating || bell_active;
-        if (self.needs_redraw || animating) && !self.occluded {
+        // A tab not on show keeps reading its shell but draws nothing.
+        if (self.needs_redraw || animating) && !self.occluded && self.output.is_some() {
             if let Some(w) = &self.window {
                 let due = self.frames.deadline(now, self.refresh_millihertz);
                 if due <= now {
@@ -1763,6 +1852,107 @@ impl App {
         Ok(App { cfg, proxy, panes: Vec::new(), next_group: 0, next_session: 0 })
     }
 
+    /// Panes sharing pane `i`'s window, in tab order.
+    fn tabs_of(&self, i: usize) -> Vec<usize> {
+        let id = self.panes[i].window_id();
+        (0..self.panes.len()).filter(|&j| self.panes[j].window_id() == id).collect()
+    }
+
+    /// Tell each pane about the tabs in its window, for the tab bar. A window
+    /// with one tab has no bar.
+    fn refresh_tabs(&mut self) {
+        for i in 0..self.panes.len() {
+            let tabs = self.tabs_of(i);
+            let bar = (tabs.len() > 1).then(|| {
+                let titles = tabs.iter().map(|&j| self.panes[j].tab_title()).collect();
+                let active = tabs.iter().position(|&j| self.panes[j].output.is_some()).unwrap_or(0);
+                (titles, active)
+            });
+            self.panes[i].set_tabs(bar);
+        }
+    }
+
+    /// Show tab `to` in place of `from`, in the same window: the surface moves
+    /// across, and so do focus and the modifier keys held.
+    fn switch_tab(&mut self, from: usize, to: usize) {
+        if from == to || self.panes[from].output.is_none() {
+            return;
+        }
+        let output = self.panes[from].output.take();
+        let (focused, modifiers, occluded) = (self.panes[from].focused, self.panes[from].modifiers, self.panes[from].occluded);
+        if focused {
+            self.panes[from].set_focus(false);
+        }
+        let pane = &mut self.panes[to];
+        pane.output = output;
+        // Glyph ids are numbered per pane, so the atlas holds another pane's.
+        pane.atlas_generation = u64::MAX;
+        pane.modifiers = modifiers;
+        pane.occluded = occluded;
+        if focused {
+            pane.set_focus(true);
+        }
+        // The window may have been resized while this tab was hidden.
+        pane.reflow();
+        if let Some(w) = &pane.window {
+            w.request_redraw();
+        }
+    }
+
+    /// Open a tab in pane `i`'s window, just after it, and show it.
+    fn open_tab(&mut self, i: usize, start_dir: Option<String>) {
+        let Some(win) = self.panes[i].window.clone() else { return };
+        if self.panes[i].output.is_none() {
+            return;
+        }
+        let mut cfg = self.cfg.clone();
+        cfg.startup_cmd = None;
+        cfg.startup_warning = None;
+        let start_dir = start_dir.or_else(|| cfg.working_directory.clone());
+        let mut pane = match Pane::new(cfg, self.proxy.clone(), start_dir) {
+            Ok(pane) => pane,
+            Err(e) => {
+                self.panes[i].notify(format!("Cannot open a tab: {e}"));
+                return;
+            }
+        };
+        self.next_session += 1;
+        pane.session_title = format!("Shell {}", self.next_session);
+        pane.tab_group = self.panes[i].tab_group.clone();
+        // Lay the new shell out below the bar that is about to appear.
+        pane.tabs = Some((Vec::new(), 0));
+        pane.set_display_scale(win.scale_factor() as f32);
+        pane.atlas_generation = u64::MAX;
+        let output = self.panes[i].output.take();
+        pane.start(win, output.expect("checked above"));
+        if pane.exited {
+            self.panes[i].output = pane.output.take();
+            self.panes[i].needs_redraw = true;
+            return;
+        }
+        let (focused, modifiers) = (self.panes[i].focused, self.panes[i].modifiers);
+        if focused {
+            self.panes[i].set_focus(false);
+        }
+        pane.focused = focused;
+        pane.modifiers = modifiers;
+        self.panes.insert(i + 1, pane);
+        self.refresh_tabs();
+    }
+
+    /// Close pane `i`. A tab on show first hands the window to a neighbour,
+    /// so the window stays open while it has tabs.
+    fn close_pane(&mut self, i: usize) {
+        let tabs = self.tabs_of(i);
+        if tabs.len() > 1 && self.panes[i].output.is_some() {
+            let at = tabs.iter().position(|&j| j == i).unwrap_or(0);
+            let next = if at + 1 < tabs.len() { tabs[at + 1] } else { tabs[at - 1] };
+            self.switch_tab(i, next);
+        }
+        self.panes.remove(i);
+        self.refresh_tabs();
+    }
+
     fn open_pane(&mut self, el: &ActiveEventLoop, start_dir: Option<String>, tab_group: Option<String>) {
         let group = tab_group.unwrap_or_else(|| {
             self.next_group += 1;
@@ -1804,7 +1994,17 @@ impl ApplicationHandler<Wake> for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        let Some(i) = self.panes.iter().position(|p| p.window_id() == Some(id)) else { return };
+        if matches!(event, WindowEvent::CloseRequested) {
+            // The window's close button closes every tab in it.
+            self.panes.retain(|p| p.window_id() != Some(id));
+            self.refresh_tabs();
+            if self.panes.is_empty() {
+                el.exit();
+            }
+            return;
+        }
+        // Events go to the tab on show; the others in its window are hidden.
+        let Some(i) = self.panes.iter().position(|p| p.window_id() == Some(id) && p.output.is_some()) else { return };
         self.panes[i].handle(event);
         match self.panes[i].request.take() {
             Some(Request::NewWindow) => {
@@ -1812,14 +2012,25 @@ impl ApplicationHandler<Wake> for App {
                 let dir = self.panes[i].term.cwd.clone();
                 self.open_pane(el, dir, None);
             }
+            Some(Request::NewTab) if PLATFORM == Platform::Linux => {
+                let dir = self.panes[i].term.cwd.clone();
+                self.open_tab(i, dir);
+            }
+            Some(Request::ShowTab(index)) => {
+                if let Some(&to) = self.tabs_of(i).get(index) {
+                    self.switch_tab(i, to);
+                    self.refresh_tabs();
+                }
+            }
             Some(Request::NewTab) => {
                 let dir = self.panes[i].term.cwd.clone();
                 let group = self.panes[i].tab_group.clone();
                 self.open_pane(el, dir, Some(group));
             }
             Some(Request::Close) => {
-                // Dropping the pane closes its window and ends its shell.
-                self.panes.remove(i);
+                // Dropping the pane ends its shell, and closes its window
+                // with its last tab.
+                self.close_pane(i);
                 if self.panes.is_empty() {
                     el.exit();
                 }
@@ -1855,17 +2066,20 @@ impl ApplicationHandler<Wake> for App {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         let mut deadline: Option<std::time::Instant> = None;
-        self.panes.retain_mut(|pane| {
+        for pane in &mut self.panes {
             let due = pane.tick();
-            if pane.exited {
-                return false;
+            if !pane.exited {
+                deadline = match (deadline, due) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
             }
-            deadline = match (deadline, due) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, b) => a.or(b),
-            };
-            true
-        });
+        }
+        while let Some(i) = self.panes.iter().position(|p| p.exited) {
+            self.close_pane(i);
+        }
+        // Titles change as programs set them, in hidden tabs too.
+        self.refresh_tabs();
         if self.panes.is_empty() {
             el.exit();
             return;
