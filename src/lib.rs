@@ -11,6 +11,7 @@ pub mod color;
 pub mod config;
 pub mod commands;
 pub mod cli;
+mod clipboard;
 pub mod input;
 pub mod font;
 mod frame;

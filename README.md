@@ -98,6 +98,22 @@ These are deliberate choices, not omissions:
 
 ## Build and run
 
+From the project directory:
+
+```sh
+make run       # build and open the macOS app
+make restart   # rebuild, close existing sessions, and reopen the app
+make test      # run the test suite
+```
+
+`make restart` works from inside Arabic Term too. It finishes the build before
+closing running Arabic Term app instances, including copies launched from the
+Dock or Finder, then opens the newly built app in the background. Restarting
+closes those windows and their shell sessions. Relaunch errors are recorded in
+`target/restart.log`. Run `make help` to list the available commands.
+
+To build or run the executable directly:
+
 ```sh
 cargo build --release
 ./target/release/arabic-term
@@ -201,6 +217,12 @@ Hold Shift while dragging to select text inside mouse-aware programs such as
 editors. Dragging files into the window inserts quoted shell paths. Pasted
 CRLF, CR and LF line endings are normalized consistently, while Arabic marks
 and joiners are preserved. `Cmd K` clears scrollback and keeps the live screen.
+
+`Cmd V`, the Paste command, and middle-click also accept copied files and
+screenshots. Copied files insert their quoted paths; an image on the clipboard
+is saved as a PNG in the system temporary directory and its quoted path is
+inserted. These temporary images remain available after the terminal closes,
+until the system cleans them up. Search and picker fields accept text only.
 
 `Cmd Shift R` reloads settings in every open tab and window. Invalid settings
 leave running sessions unchanged and show a message. Removing a setting restores

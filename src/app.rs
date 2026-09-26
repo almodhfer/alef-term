@@ -344,7 +344,9 @@ impl Pane {
             search_index: Index::default(),
             picker: None,
             epoch: 0,
-            clipboard: arboard::Clipboard::new().ok(),
+            clipboard: arboard::Clipboard::new().map_err(|error| {
+                log::warn!("could not initialize clipboard: {error}");
+            }).ok(),
             needs_redraw: true,
             exited: false,
             frame_hold: crate::frame_hold::FrameHold::new(),
@@ -603,12 +605,7 @@ impl Pane {
                 self.search_show_current();
             }
             Key::Character(c) if sup && c.as_str() == "v" => {
-                let pasted = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
-                if let Some(t) = pasted {
-                    let t: String = t.chars().filter(|c| !c.is_control()).collect();
-                    search.query.push_str(&t);
-                    self.search_run(true);
-                }
+                self.paste_clipboard();
             }
             Key::Character(c) if sup && c.as_str() == "f" => {
                 // Cmd-F again with a selection re-seeds the query.
@@ -866,6 +863,26 @@ impl Pane {
         }
     }
 
+    fn paste_clipboard(&mut self) {
+        let allow_paths = self.commands.is_none() && self.picker.is_none() && self.search.is_none();
+        let Some(clipboard) = &mut self.clipboard else {
+            self.notify("Clipboard is unavailable");
+            return;
+        };
+        match crate::clipboard::paste_text(clipboard, allow_paths) {
+            Ok(Some(text)) => self.paste(&text),
+            Ok(None) => self.notify(if allow_paths {
+                "No text, files, or image is available on the clipboard"
+            } else {
+                "No text is available on the clipboard"
+            }),
+            Err(error) => {
+                log::warn!("clipboard paste failed: {error:#}");
+                self.notify(error.to_string());
+            }
+        }
+    }
+
     fn paste(&mut self, text: &str) {
         if let Some(commands) = &mut self.commands {
             commands.push(text);
@@ -946,11 +963,7 @@ impl Pane {
                     }
                 }
             }
-            Action::Paste => {
-                if let Some(text) = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok()) {
-                    self.paste(&text);
-                } else { self.notify("No text is available on the clipboard"); }
-            }
+            Action::Paste => self.paste_clipboard(),
             Action::SelectAll => {
                 let start = if self.term.grid.in_alt() { self.term.grid.scrollback.len() } else { 0 };
                 let end = self.term.grid.scrollback.len() + self.term.grid.rows - 1;
@@ -1331,10 +1344,7 @@ impl Pane {
                         }
                     }
                     (MouseButton::Middle, ElementState::Pressed) => {
-                        let text = self.clipboard.as_mut().and_then(|cb| cb.get_text().ok());
-                        if let Some(t) = text {
-                            self.paste(&t);
-                        }
+                        self.paste_clipboard();
                     }
                     _ => {}
                 }
