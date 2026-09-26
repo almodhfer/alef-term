@@ -509,6 +509,7 @@ impl Terminal {
             c.attrs = Attrs::empty();
             c.fg = Color::Default;
             c.bg = Color::Default;
+            c.underline = Color::Default;
             return;
         }
         while let Some(p) = iter.next() {
@@ -527,8 +528,25 @@ impl Terminal {
                         match n {
                             38 => c.fg = col,
                             48 => c.bg = col,
-                            _ => {}
+                            _ => c.underline = col,
                         }
+                    }
+                    continue;
+                }
+                // `4:n` picks an underline style; `4:0` turns it off.
+                4 if p.len() > 1 => {
+                    let c = &mut self.grid.screen.cursor;
+                    c.attrs.remove(Attrs::UNDERLINE | Attrs::UNDERLINE_STYLES);
+                    let style = match p[1] {
+                        0 => None,
+                        2 => Some(Attrs::UNDERLINE_DOUBLE),
+                        3 => Some(Attrs::UNDERLINE_CURLY),
+                        4 => Some(Attrs::UNDERLINE_DOTTED),
+                        5 => Some(Attrs::UNDERLINE_DASHED),
+                        _ => Some(Attrs::empty()),
+                    };
+                    if let Some(style) = style {
+                        c.attrs.insert(Attrs::UNDERLINE | style);
                     }
                     continue;
                 }
@@ -540,18 +558,28 @@ impl Terminal {
                     c.attrs = Attrs::empty();
                     c.fg = Color::Default;
                     c.bg = Color::Default;
+                    c.underline = Color::Default;
                 }
                 1 => c.attrs.insert(Attrs::BOLD),
                 2 => c.attrs.insert(Attrs::DIM),
                 3 => c.attrs.insert(Attrs::ITALIC),
-                4 => c.attrs.insert(Attrs::UNDERLINE),
+                4 => {
+                    c.attrs.remove(Attrs::UNDERLINE_STYLES);
+                    c.attrs.insert(Attrs::UNDERLINE);
+                }
                 5 | 6 => c.attrs.insert(Attrs::BLINK),
                 7 => c.attrs.insert(Attrs::INVERSE),
                 8 => c.attrs.insert(Attrs::HIDDEN),
                 9 => c.attrs.insert(Attrs::STRIKEOUT),
-                21 | 22 => c.attrs.remove(Attrs::BOLD | Attrs::DIM),
+                // Double underline, as in xterm and ECMA-48; some consoles
+                // once used 21 to end bold, which 22 does.
+                21 => {
+                    c.attrs.remove(Attrs::UNDERLINE_STYLES);
+                    c.attrs.insert(Attrs::UNDERLINE | Attrs::UNDERLINE_DOUBLE);
+                }
+                22 => c.attrs.remove(Attrs::BOLD | Attrs::DIM),
                 23 => c.attrs.remove(Attrs::ITALIC),
-                24 => c.attrs.remove(Attrs::UNDERLINE),
+                24 => c.attrs.remove(Attrs::UNDERLINE | Attrs::UNDERLINE_STYLES),
                 25 => c.attrs.remove(Attrs::BLINK),
                 27 => c.attrs.remove(Attrs::INVERSE),
                 28 => c.attrs.remove(Attrs::HIDDEN),
@@ -560,6 +588,7 @@ impl Terminal {
                 39 => c.fg = Color::Default,
                 40..=47 => c.bg = Color::Indexed((n - 40) as u8),
                 49 => c.bg = Color::Default,
+                59 => c.underline = Color::Default,
                 90..=97 => c.fg = Color::Indexed((n - 90 + 8) as u8),
                 100..=107 => c.bg = Color::Indexed((n - 100 + 8) as u8),
                 _ => {}
@@ -712,11 +741,18 @@ impl Perform for Terminal {
             if let Some(l) = link {
                 cell.extra.get_or_insert_with(Default::default).link = Some(l);
             }
+            let underline = Some(cur.underline).filter(|u| *u != Color::Default);
+            if underline.is_some() {
+                cell.extra.get_or_insert_with(Default::default).underline = underline;
+            }
             if width == 2 && col + 1 < cols {
                 let spacer = &mut r.cells[col + 1];
                 spacer.reset(cur.bg);
                 spacer.attrs = cur.attrs | Attrs::WIDE_SPACER;
                 spacer.fg = cur.fg;
+                if underline.is_some() {
+                    spacer.extra.get_or_insert_with(Default::default).underline = underline;
+                }
             }
         }
 

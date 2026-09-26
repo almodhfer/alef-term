@@ -205,6 +205,8 @@ pub struct Fonts {
     fallback: crate::hash::FastMap<char, Option<usize>>,
     /// Faces loaded for `fallback`, tried before searching the system again.
     extras: Vec<usize>,
+    /// The wavy underline for the current cell size; see [`Fonts::undercurl`].
+    curl: Option<RasterGlyph>,
     pub size_px: f32,
     /// Multiplier on the line box shared by Latin and Arabic, at least 1.
     line_height: f32,
@@ -500,6 +502,7 @@ impl Fonts {
             db,
             fallback: Default::default(),
             extras: Vec::new(),
+            curl: None,
             size_px,
             line_height: 1.0,
             cell_w: 0.0,
@@ -744,6 +747,43 @@ impl Fonts {
         } else {
             self.size_px
         }
+    }
+
+    /// A wavy underline one cell wide, as an antialiased coverage mask. It
+    /// holds exactly one period of a sine, so the waves of neighbouring cells
+    /// join into one. Drawn like a glyph, so both renderers agree on it.
+    /// Rebuilt only when the cell size changes.
+    pub fn undercurl(&mut self) -> &RasterGlyph {
+        let width = self.cell_w.max(1.0) as u32;
+        let thickness = (self.size_px / 16.0).max(1.0);
+        let amplitude = (self.size_px / 12.0).clamp(1.0, 4.0);
+        let height = (2.0 * amplitude + thickness + 2.0).ceil() as u32;
+        if !self.curl.as_ref().is_some_and(|g| g.width == width && g.height == height) {
+            let k = std::f32::consts::TAU / width as f32;
+            let mid = height as f32 / 2.0;
+            let mut data = vec![0u8; (width * height) as usize];
+            for py in 0..height {
+                for px in 0..width {
+                    // 4x4 samples; a sample is ink when its distance from the
+                    // curve, measured across it, is within half the thickness.
+                    let mut ink = 0u32;
+                    for s in 0..16 {
+                        let x = px as f32 + ((s % 4) as f32 + 0.5) / 4.0;
+                        let y = py as f32 + ((s / 4) as f32 + 0.5) / 4.0;
+                        let slope = amplitude * k * (k * x).cos();
+                        let gap = (y - (mid - amplitude * (k * x).sin())).abs() / (1.0 + slope * slope).sqrt();
+                        if gap <= thickness / 2.0 {
+                            ink += 1;
+                        }
+                    }
+                    data[(py * width + px) as usize] = (ink * 255 / 16) as u8;
+                }
+            }
+            let id = self.next_glyph_id;
+            self.next_glyph_id += 1;
+            self.curl = Some(RasterGlyph { id, width, height, left: 0, top: 0, data, color: false });
+        }
+        self.curl.as_ref().expect("just built")
     }
 
     pub fn rasterize(&mut self, font: usize, glyph: u16, px: f32, subpx: f32) -> Option<&RasterGlyph> {

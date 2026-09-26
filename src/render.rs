@@ -110,6 +110,33 @@ fn fit_cells(text: &str, cols: usize) -> crate::grid::Row {
     row
 }
 
+/// A cell's underline in its style. `top` is where a single underline sits
+/// and `bottom` the bottom of the cell, which the other styles stay above.
+fn draw_underline<T: Target>(canvas: &mut T, fonts: &mut Fonts, attrs: Attrs, x: f32, top: f32, bottom: f32, colour: Rgb) {
+    let w = fonts.cell_w;
+    let dot = (fonts.size_px / 16.0).round().max(1.0);
+    if attrs.contains(Attrs::UNDERLINE_CURLY) {
+        let wave = fonts.undercurl();
+        let oy = (top + 0.5 - wave.height as f32 / 2.0).min(bottom - wave.height as f32);
+        canvas.glyph(wave, x.round() as i32, oy.round() as i32, colour);
+    } else if attrs.contains(Attrs::UNDERLINE_DOUBLE) {
+        let top = top.min(bottom - 3.0);
+        canvas.fill_rect(x, top, w, 1.0, colour);
+        canvas.fill_rect(x, top + 2.0, w, 1.0, colour);
+    } else if attrs.contains(Attrs::UNDERLINE_DOTTED) {
+        let mut dx = 0.0;
+        while dx < w {
+            canvas.fill_rect(x + dx, top, dot.min(w - dx), dot, colour);
+            dx += 2.0 * dot;
+        }
+    } else if attrs.contains(Attrs::UNDERLINE_DASHED) {
+        // One dash per cell, centred, so dashes and gaps alternate evenly.
+        canvas.fill_rect(x + w * 0.2, top, w * 0.6, 1.0, colour);
+    } else {
+        canvas.fill_rect(x, top, w, 1.0, colour);
+    }
+}
+
 /// Somewhere a frame can be drawn: the software [`Canvas`], or the GPU.
 ///
 /// Primitives arrive in back-to-front order and must be composited in that
@@ -547,7 +574,8 @@ impl Renderer {
                     let fg = colours[cell_idx].0;
                     let x = self.pad_x + col as f32 * cell_w;
                     if cell.attrs.contains(Attrs::UNDERLINE) {
-                        canvas.fill_rect(x, y + baseline + 2.0, cell_w, 1.0, fg);
+                        let colour = cell.underline_color().map_or(fg, |c| palette.resolve(c, true));
+                        draw_underline(canvas, fonts, cell.attrs, x, y + baseline + 2.0, y + cell_h, colour);
                     }
                     if cell.attrs.contains(Attrs::STRIKEOUT) {
                         canvas.fill_rect(x, y + baseline - cell_h * 0.25, cell_w, 1.0, fg);

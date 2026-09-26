@@ -16,6 +16,8 @@ const SCRIPT: &str = concat!(
     "│ \x1b[1mالاسم\x1b[0m       │ \x1b[1mالحجم\x1b[0m    │\r\n",
     "└─────────────┴──────────┘\r\n",
     "\x1b[7m NORMAL \x1b[0m\x1b[44m main.rs   \x1b[0m \x1b[2mdim\x1b[0m \x1b[3mitalic\x1b[0m\r\n",
+    // Every underline style, coloured and not.
+    "\x1b[4:3;58:2::255:60:60mwavy\x1b[4:2;59m double\x1b[4:4;58;5;33m dotted\x1b[4:5m dashed\x1b[0m خطأ\r\n",
     // A small red sixel picture, so the image path is covered too.
     "\x1bPq#0;2;100;0;0#0~~~~~~~~~~~~-~~~~~~~~~~~~\x1b\\\r\n",
     "\x1b[1;32m$\x1b[0m ",

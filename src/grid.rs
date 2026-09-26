@@ -23,6 +23,14 @@ bitflags::bitflags! {
         const WIDE_SPACER   = 1 << 8;
         /// Leading half of a double-width character.
         const WIDE_LEADING  = 1 << 9;
+        /// Underline styles, from `SGR 4:n` and `SGR 21`. Each is set together
+        /// with UNDERLINE; UNDERLINE alone is a single straight line.
+        const UNDERLINE_DOUBLE = 1 << 10;
+        const UNDERLINE_CURLY  = 1 << 11;
+        const UNDERLINE_DOTTED = 1 << 12;
+        const UNDERLINE_DASHED = 1 << 13;
+        const UNDERLINE_STYLES = Self::UNDERLINE_DOUBLE.bits() | Self::UNDERLINE_CURLY.bits()
+            | Self::UNDERLINE_DOTTED.bits() | Self::UNDERLINE_DASHED.bits();
     }
 }
 
@@ -35,6 +43,9 @@ pub struct CellExtra {
     pub marks: Vec<char>,
     /// OSC 8 hyperlink target.
     pub link: Option<Box<str>>,
+    /// Underline colour from `SGR 58`; the text colour when unset. Editors
+    /// colour diagnostics this way, on a few cells at a time.
+    pub underline: Option<Color>,
 }
 
 /// One grid cell. Kept at 24 bytes so a 10k-line scrollback at 200 columns
@@ -77,6 +88,10 @@ impl Cell {
 
     pub fn marks(&self) -> &[char] {
         self.extra.as_deref().map_or(&[], |e| e.marks.as_slice())
+    }
+
+    pub fn underline_color(&self) -> Option<Color> {
+        self.extra.as_deref().and_then(|e| e.underline)
     }
 
     /// Reset to blank while inheriting the given background (ECMA-48 says
@@ -128,6 +143,8 @@ pub struct Cursor {
     pub fg: Color,
     pub bg: Color,
     pub attrs: Attrs,
+    /// Underline colour for printed cells; `Default` follows the text colour.
+    pub underline: Color,
     /// Deferred autowrap: the cursor sits on the last column and the *next*
     /// printable character wraps. Tracking this separately from `col` is what
     /// makes writing to the bottom-right cell behave like a real terminal.

@@ -368,7 +368,9 @@ Pro, which only macOS ships.
 ## What's implemented
 
 Colours (16 / 256 / truecolour, both `;` and `:` SGR forms), bold/dim/italic/
-underline/strikeout/inverse, cursor addressing, erase and insert/delete of
+strikeout/inverse, underlines in five styles — straight, double, wavy, dotted
+and dashed — with their own colour (`SGR 4:n`, 21, 58, 59) as editors use for
+diagnostics, cursor addressing, erase and insert/delete of
 characters and lines, `DECSTBM` scroll regions, the alternate screen, scrollback,
 autowrap with deferred wrap at the margin, wide (CJK) characters with spacers,
 combining marks, DEC line-drawing charset, bracketed paste, focus events, window title (OSC 0/2), palette changes (OSC 4),
