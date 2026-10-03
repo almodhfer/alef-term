@@ -37,6 +37,20 @@ fn automatic_direction_preserves_table_columns_and_latin_numbers() {
 }
 
 #[test]
+fn table_cell_padding_stays_on_its_own_side_of_an_arabic_field() {
+    assert_eq!(visual("│ مؤانسة     │ والمؤانسة» │", BidiMode::Auto),
+        "│ ةسناؤم     │ »ةسناؤملاو │");
+}
+
+#[test]
+fn english_sentence_opening_with_an_arabic_word_stays_left_to_right() {
+    for text in ["- حفيف (Hafeef): the rustle of leaves and turning pages.",
+                 "- طرس (Tirs): a written page or parchment, plural طروس."] {
+        assert_eq!(visual(text, BidiMode::Auto), visual(text, BidiMode::ForceLtr), "{text}");
+    }
+}
+
+#[test]
 fn rtl_punctuation_glyphs_stay_centered_on_their_own_cells() {
     let mut fonts = Fonts::new(16.0, None).unwrap();
     let mut term = Terminal::new(1, 40, 0);

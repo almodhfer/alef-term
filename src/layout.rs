@@ -20,7 +20,7 @@
 use crate::font::{Fonts, Slot, Style};
 use crate::grid::{Attrs, Row};
 use crate::term::BidiMode;
-use unicode_bidi::{Level, ParagraphBidiInfo};
+use unicode_bidi::{BidiClass, Level, ParagraphBidiInfo};
 
 #[derive(Clone, Copy, Debug)]
 pub struct PositionedGlyph {
@@ -89,7 +89,22 @@ fn auto_base(text: &str) -> Option<Level> {
         || first.rsplit_once('.').is_some_and(|(_, ext)| {
             !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric())
         });
-    (prompt || path).then(Level::ltr)
+    if prompt || path {
+        return Some(Level::ltr());
+    }
+    // An English sentence that merely opens with an Arabic word — a glossary
+    // entry, "- حفيف (Hafeef): the rustle of leaves" — is still an English
+    // sentence. First-strong would flip the whole line, so the script that
+    // carries most of the letters wins; a tie falls back to P2/P3.
+    let (mut ltr, mut rtl) = (0usize, 0usize);
+    for c in text.chars() {
+        match unicode_bidi::bidi_class(c) {
+            BidiClass::L => ltr += 1,
+            BidiClass::R | BidiClass::AL => rtl += 1,
+            _ => {}
+        }
+    }
+    (ltr > rtl).then(Level::ltr)
 }
 
 /// One character extracted from the row, with its provenance.
@@ -247,7 +262,23 @@ impl Layouter {
                             i += 1;
                         }
                     }
-                    segments.push((start, i, true));
+                    // A lone blank at either edge of a field is its padding
+                    // against the barrier, not part of the text. Left inside,
+                    // an RTL field would carry it to the far side and sit
+                    // flush against the table border.
+                    let blank = |it: &Item| it.ch == ' ' && it.marks.is_empty();
+                    let (mut ts, mut te) = (start, i);
+                    while ts < te && blank(&self.items[ts]) {
+                        ts += 1;
+                    }
+                    while te > ts && blank(&self.items[te - 1]) {
+                        te -= 1;
+                    }
+                    for (a, b, reorder) in [(start, ts, false), (ts, te, true), (te, i, false)] {
+                        if a < b {
+                            segments.push((a, b, reorder));
+                        }
+                    }
                 }
             }
         }
