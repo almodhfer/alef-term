@@ -66,6 +66,19 @@ fn linux_shortcuts_use_ctrl_shift_and_leave_ctrl_to_programs() {
 }
 
 #[test]
+fn linux_leaves_the_tab_stepping_keys_to_the_program_in_a_window_with_one_tab() {
+    let linux = Platform::Linux;
+    for step in [Shortcut::Do(Action::NextTab), Shortcut::Do(Action::PreviousTab), Shortcut::SelectTab(2), Shortcut::SelectTab(9)] {
+        assert!(linux.passes(step, false), "{step:?} has no tab to go to");
+        assert!(!linux.passes(step, true), "{step:?} moves between tabs");
+        assert!(!Platform::Mac.passes(step, false), "Command chords never reach the program");
+    }
+    for kept in [Shortcut::Do(Action::NewTab), Shortcut::Do(Action::Copy), Shortcut::Do(Action::ZoomReset), Shortcut::Close] {
+        assert!(!linux.passes(kept, false), "{kept:?} is still the terminal's");
+    }
+}
+
+#[test]
 fn linux_tabs_step_with_ctrl_tab_and_page_keys_and_jump_by_number() {
     let linux = Platform::Linux;
     let named = |k| Key::Named(k);

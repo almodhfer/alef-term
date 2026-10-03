@@ -1384,8 +1384,10 @@ impl Pane {
                     return;
                 }
                 if let Some(shortcut) = PLATFORM.shortcut(&key, self.modifiers) {
-                    self.run_shortcut(shortcut);
-                    return;
+                    if !PLATFORM.passes(shortcut, self.tabs.is_some()) {
+                        self.run_shortcut(shortcut);
+                        return;
+                    }
                 }
                 // Command chords never reach the program on macOS. On Linux a
                 // Ctrl+Shift key that is not a shortcut still does, unless an

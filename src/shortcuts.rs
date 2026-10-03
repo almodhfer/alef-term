@@ -70,6 +70,16 @@ impl Platform {
         }
     }
 
+    /// `shortcut` has nothing to do here and its key belongs to the program.
+    /// On Linux the keys that step between tabs, Ctrl+Tab and Ctrl+PgUp/PgDn,
+    /// are ones vim and tmux use too, so a window with one tab leaves them be,
+    /// and Ctrl+Shift with a number along with them.
+    pub fn passes(self, shortcut: Shortcut, tabbed: bool) -> bool {
+        self == Platform::Linux
+            && !tabbed
+            && matches!(shortcut, Shortcut::Do(Action::NextTab | Action::PreviousTab) | Shortcut::SelectTab(_))
+    }
+
     /// The keys shown beside `action` in the command palette.
     pub fn hint(self, action: Action) -> Option<&'static str> {
         use Action::*;
