@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Alef: an Arabic-first terminal emulator with full bidi and contextual shaping."
 license = "MIT"
+repository = "https://github.com/almodhfer/alef-term"
 readme = "README.md"
 keywords = ["terminal", "arabic", "bidi", "rtl"]
 categories = ["command-line-utilities"]

@@ -107,7 +107,7 @@ Alef runs on macOS and Linux and is built from source; there are no packaged
 releases yet. You need Rust 1.85 or newer.
 
 ```sh
-git clone <this repository> alef && cd alef
+git clone https://github.com/almodhfer/alef-term && cd alef-term
 make run       # macOS: build Alef.app and open it
 make install   # Linux: install to ~/.local/bin with a launcher entry
 ```
