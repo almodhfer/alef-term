@@ -73,3 +73,28 @@ jobs:
           files: |
             Alef-*.zip
             alef-term-*.tar.gz
+
+  # Point the Homebrew cask at the new release. Needs the TAP_TOKEN secret: a
+  # token that can write to almodhfer/homebrew-tap.
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos
+      - uses: actions/checkout@v4
+        with:
+          repository: almodhfer/homebrew-tap
+          token: ${{ secrets.TAP_TOKEN }}
+          path: tap
+      - name: Update the cask
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sha=$(sha256sum "Alef-$GITHUB_REF_NAME-macos-arm64.zip" | cut -d' ' -f1)
+          cd tap
+          sed -i "s/^  version \".*\"/  version \"$version\"/; s/^  sha256 \".*\"/  sha256 \"$sha\"/" Casks/alef-term.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Update alef-term to $version" || echo "cask already up to date"
+          git push
