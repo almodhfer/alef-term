@@ -1,6 +1,9 @@
-# arabic-term
+<img src="assets/icon.png" width="96" alt="Alef icon">
 
-A terminal emulator, written in Rust, that renders Arabic correctly.
+# Alef
+
+An Arabic-first terminal emulator, written in Rust. Alef (ألف) is the first
+letter of the Arabic alphabet.
 
 Arabic breaks in most terminals for a structural reason: a terminal is a grid of
 fixed cells, but Arabic needs the opposite of fixed cells. Letters change shape
@@ -10,7 +13,7 @@ the whole line runs right-to-left while any numbers or Latin words inside it
 still run left-to-right. A terminal that stamps one glyph per cell cannot do
 any of that, so Arabic comes out as disconnected letters in the wrong order.
 
-`arabic-term` keeps the grid — every column stays exactly one cell wide, so
+Alef keeps the grid — every column stays exactly one cell wide, so
 `vim`, `htop` and `git log --graph` keep working — and does the Arabic work at
 draw time instead.
 
@@ -64,7 +67,9 @@ sentence such as `افتح الملف README ثم احفظ التغييرات` n
 that the phrases on either side of `README` stay in sentence order; the English
 word itself still reads left-to-right. Table separators and multiple-space
 column gutters stay fixed. Common shell prefixes (`$`, `%`, `#`, `>`, `❯`,
-`➜`) and path-like first tokens retain an LTR base. This is a terminal policy
+`➜`) and path-like first tokens retain an LTR base, and so does a field with
+more Latin letters than Arabic ones: an English sentence that merely opens
+with an Arabic word stays left-to-right. This is a terminal policy
 on top of the [Unicode Bidirectional Algorithm](https://www.unicode.org/reports/tr9/),
 not an attempt to parse every shell or programming language. For ambiguous
 output, set `bidi_mode = "ltr"` or `"rtl"`, or press `Cmd R` to cycle through
@@ -96,9 +101,22 @@ These are deliberate choices, not omissions:
   right-to-left override cannot make a command line display as something other
   than what runs.
 
+## Install
+
+Alef runs on macOS and Linux and is built from source; there are no packaged
+releases yet. You need Rust 1.85 or newer.
+
+```sh
+git clone <this repository> alef && cd alef
+make run       # macOS: build Alef.app and open it
+make install   # Linux: install to ~/.local/bin with a launcher entry
+```
+
+The package and its executable are named `alef-term`.
+
 ## Build and run
 
-Arabic Term runs on macOS and Linux. From the project directory on macOS:
+From the project directory on macOS:
 
 ```sh
 make run       # build and open the macOS app
@@ -116,13 +134,13 @@ make test      # run the test suite
 ```
 
 `make install` puts the executable in `~/.local/bin`, an icon in
-`~/.local/share/icons`, and `arabic-term.desktop` in
-`~/.local/share/applications`, so Arabic Term appears in the application
+`~/.local/share/icons`, and `alef-term.desktop` in
+`~/.local/share/applications`, so Alef appears in the application
 launcher and its windows are grouped under its icon. Run it again to update.
 `PREFIX` and `XDG_DATA_HOME` choose other locations.
 
-`make restart` works from inside Arabic Term too. It finishes the build before
-closing running Arabic Term app instances, including copies launched from the
+`make restart` works from inside Alef too. It finishes the build before
+closing running Alef app instances, including copies launched from the
 Dock or Finder, then opens the newly built app in the background. Restarting
 closes those windows and their shell sessions. Relaunch errors are recorded in
 `target/restart.log`. Run `make help` to list the available commands.
@@ -131,10 +149,10 @@ To build or run the executable directly:
 
 ```sh
 cargo build --release
-./target/release/arabic-term
+./target/release/alef-term
 ```
 
-`scripts/bundle.sh` builds `target/bundle/Arabic Term.app`, with an icon, for
+`scripts/bundle.sh` builds `target/bundle/Alef.app`, with an icon, for
 the Dock, Spotlight and `open`. Or build and launch in one step with `cargo run --release`. Plain `cargo run`
 selects the development build even after `cargo build --release`; the development
 profile also enables optimization so scrolling and text shaping remain responsive.
@@ -162,23 +180,29 @@ that status bars, file trees and workspace managers draw with; without one they
 render as empty boxes. The "Mono" cut keeps those icons one cell wide.
 
 ```
---font-size <px>        base font size (default 15)
---arabic-scale <f>      Arabic face scale (default: derived from metrics)
---exec <cmd>            run a command at startup
---size <cols>x<rows>    initial grid size (default 96x28)
---scroll-lines <n>      lines per wheel notch (default 3)
---touch-scroll <f>      trackpad scroll speed (default 3)
---no-alternate-scroll   do not turn the wheel into arrow keys
---theme <name>          colour theme (default dark)
---list-themes           print the built-in themes
+--font-size <px>              base font size (default 15)
+--arabic-scale <f>            Arabic face scale (default: derived from metrics)
+--line-height <1..2>          line spacing multiplier (default 1)
+--bidi-mode <auto|ltr|rtl>    text direction (default auto)
+--size <cols>x<rows>          initial grid size (default 96x28)
+--working-directory, -d <p>   starting folder
+--exec, -e <cmd>              run a command in the first session
+--scroll-lines <n>            lines per wheel notch (default 3)
+--touch-scroll <f>            trackpad scroll speed (default 3)
+--no-alternate-scroll         do not turn the wheel into arrow keys
+--theme <name>                colour theme (default dark)
+--list-themes                 print the built-in themes
+--renderer <gpu|software>     drawing backend (default gpu)
+--config <path>               settings file
+--check-config                validate settings without opening a window
 ```
 
-Set `ARABIC_TERM_PROFILE=1` to print per-phase frame times to stderr.
+Set `ALEF_TERM_PROFILE=1` to print per-phase frame times to stderr.
 
 ### Configuration
 
-Settings live in `~/.config/arabic-term/config.toml` (or the file named by
-`$ARABIC_TERM_CONFIG` or `--config`). Every key is optional and flags override
+Settings live in `~/.config/alef-term/config.toml` (or the file named by
+`$ALEF_TERM_CONFIG` or `--config`). Every key is optional and flags override
 the file; a typo is reported on startup rather than ignored. See
 [`docs/config.example.toml`](docs/config.example.toml) for the full list: fonts,
 size, scrollback, scroll speed, cursor shape and blink, the visual bell, the
@@ -257,7 +281,7 @@ its default; command-line overrides still take precedence. Fonts, spacing,
 themes, direction, cursor, scroll tuning, and clipboard preferences apply live.
 Renderer selection, initial dimensions, and starting directory apply to new
 sessions. `Cmd 0` resets to the configured font size. Validate the file without
-opening a window with `arabic-term --check-config`.
+opening a window with `alef-term --check-config`.
 
 Programs can raise notifications — a finished build, an agent waiting for
 input — with OSC 9 (iTerm2's form), OSC 777 (urxvt's, also Ghostty's) or
@@ -277,7 +301,7 @@ for child processes, while explicit supported locale preferences are preserved.
 Eighteen themes are built in: the default `dark` and `light`, Dracula, Nord,
 Gruvbox (dark and light), Solarized (dark and light), Tokyo Night, Catppuccin
 (Mocha and Latte), One Dark, Monokai, GitHub (dark and light), Rosé Pine,
-Kanagawa and Everforest. `arabic-term --list-themes` prints their names.
+Kanagawa and Everforest. `alef-term --list-themes` prints their names.
 
 Press `Cmd Shift T` to pick one from inside the terminal. The list is filtered
 as you type, the window previews the theme under the highlight, `Enter` keeps
@@ -298,7 +322,7 @@ its colour; backgrounds, images, block art and Powerline surfaces stay exact.
 Dim text uses a lower floor so it remains secondary. Set `minimum_contrast = 1`
 to preserve application colours exactly, and press Cmd Shift R to apply it.
 
-Full-screen applications can also have their own themes. Arabic Term reports
+Full-screen applications can also have their own themes. Alef reports
 its current colours and light/dark appearance; applications that draw explicit
 RGB or 256-colour backgrounds must choose their own matching light scheme.
 For [Herdr](https://herdr.dev/docs/configuration/#theme), enable this in
@@ -360,7 +384,7 @@ program — `Ctrl C` interrupts, `Ctrl W` deletes a word — apart from zoom, an
 | select / middle click | set / paste the primary selection |
 
 On macOS tabs are the system's own window tabs. Linux has no such thing, so
-Arabic Term draws them: a window with more than one tab shows a bar across its
+Alef draws them: a window with more than one tab shows a bar across its
 top, one tab per session sharing the width, and a click on a tab shows it.
 Hidden tabs keep reading their shell's output but draw nothing until shown.
 Closing the window closes all its tabs. Geeza Pro, which only macOS ships, is
@@ -443,13 +467,17 @@ because that is layout and shaping: the rustybuzz shaping plan is built once
 per face and script rather than once per word, and glyph and layout caches
 are keyed through a folded-multiply hasher rather than SipHash.
 
+## Design notes
+
+### Mouse wheel
+
 The wheel goes to the application when it has asked for mouse events, and to
 the terminal's own scrollback otherwise; `Shift` always chooses the scrollback.
 Scrolling back is not disturbed by output arriving underneath it — the view
 follows the retiring lines so the same text stays on screen, and only snaps to
 the bottom when it was already there or when you type.
 
-### A note on scrolling
+### Scrolling
 
 Scrolling is smooth at sub-line precision, with wheel events coalesced so a
 burst of trackpad ticks costs one redraw rather than one each, and the easing is
@@ -495,7 +523,7 @@ few thousand quads, cheaper than the bookkeeping to avoid it, so the renderer
 repaints whole frames and spends its effort on not drawing frames nobody asked
 for.
 
-## Layout
+## Source layout
 
 | | |
 | --- | --- |
@@ -521,7 +549,11 @@ for.
 | `src/app.rs` | window, input, event loop |
 
 Built on [rustybuzz] (shaping), [swash] (rasterisation), [unicode-bidi] (UAX #9),
-[vte] (ANSI parsing), [portable-pty], [winit] and [wgpu]. No `unsafe`.
+[vte] (ANSI parsing), [portable-pty], [winit] and [wgpu].
+
+## License
+
+MIT. See [LICENSE](LICENSE).
 
 [rustybuzz]: https://github.com/harfbuzz/rustybuzz
 [swash]: https://github.com/dfrg/swash
