@@ -220,17 +220,30 @@ impl Grid {
         if to_scrollback {
             self.scrolled += n as u64;
         }
+        let keep = to_scrollback && self.max_scrollback > 0;
         for _ in 0..n {
-            let mut row = self.screen.rows.remove(top);
-            if to_scrollback && self.max_scrollback > 0 {
-                self.scrollback.push_back(std::mem::replace(&mut row, Row::new(self.cols)));
+            if keep {
+                // Once the history is full, the line falling off its far end
+                // becomes the new blank row. Streaming output would otherwise
+                // allocate and free a full row for every line it prints.
+                let mut fresh = if self.scrollback.len() >= self.max_scrollback {
+                    self.scrollback.pop_front().unwrap_or_else(|| Row::new(self.cols))
+                } else {
+                    Row::new(self.cols)
+                };
+                fresh.resize(self.cols);
+                fresh.reset(bg);
+                let row = std::mem::replace(&mut self.screen.rows[top], fresh);
+                self.scrollback.push_back(row);
                 while self.scrollback.len() > self.max_scrollback {
                     self.scrollback.pop_front();
                 }
+            } else {
+                let row = &mut self.screen.rows[top];
+                row.resize(self.cols);
+                row.reset(bg);
             }
-            row.resize(self.cols);
-            row.reset(bg);
-            self.screen.rows.insert(bot - 1, row);
+            self.screen.rows[top..bot].rotate_left(1);
         }
         // Note: the viewport is *not* adjusted here. While scrolled back the
         // app owns `view_offset`, driven from its `Scroller`, and it follows

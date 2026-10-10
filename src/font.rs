@@ -23,13 +23,43 @@ impl ArabicFont {
     }
 }
 
+/// Map a font file read-only instead of copying it onto the heap. Apple Color
+/// Emoji alone is 188 MB, and only the tables and glyphs actually used are
+/// ever touched; mapped, the rest never costs memory. The mapping is never
+/// released, matching the `'static` lifetime the faces borrow it for.
+#[cfg(unix)]
+fn map_file(path: &str) -> Option<&'static [u8]> {
+    use std::os::fd::AsRawFd;
+    let file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len() as usize;
+    if len == 0 {
+        return None;
+    }
+    // SAFETY: a private read-only mapping of `len` bytes of an open file; the
+    // result is checked against MAP_FAILED before use and never unmapped.
+    let ptr = unsafe {
+        libc::mmap(std::ptr::null_mut(), len, libc::PROT_READ, libc::MAP_PRIVATE, file.as_raw_fd(), 0)
+    };
+    if ptr == libc::MAP_FAILED {
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(ptr as *const u8, len) })
+}
+
+#[cfg(not(unix))]
+fn map_file(_path: &str) -> Option<&'static [u8]> {
+    None
+}
+
 fn font_data(path: &str) -> Result<&'static [u8]> {
     use std::sync::{Mutex, OnceLock};
     static FILES: OnceLock<Mutex<HashMap<String, &'static [u8]>>> = OnceLock::new();
     let mut files = FILES.get_or_init(Default::default).lock().map_err(|_| anyhow!("font cache unavailable"))?;
     if let Some(data) = files.get(path) { return Ok(data); }
-    let bytes = std::fs::read(path).map_err(|e| anyhow!("{path}: {e}"))?;
-    let data: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+    let data: &'static [u8] = match map_file(path) {
+        Some(data) => data,
+        None => Box::leak(std::fs::read(path).map_err(|e| anyhow!("{path}: {e}"))?.into_boxed_slice()),
+    };
     files.insert(path.to_string(), data);
     Ok(data)
 }
