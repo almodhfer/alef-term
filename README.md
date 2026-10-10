@@ -106,7 +106,15 @@ These are deliberate choices, not omissions:
 Alef runs on macOS and Linux. Downloads are on the
 [releases page](https://github.com/almodhfer/alef-term/releases).
 
-**macOS (Apple Silicon).** Download `Alef-<version>-macos-arm64.zip`, unzip it
+**macOS (Apple Silicon), with Homebrew.**
+
+```sh
+brew install --cask almodhfer/tap/alef-term
+```
+
+This installs `Alef.app` and puts `alef-term` on the PATH.
+
+**macOS (Apple Silicon), by hand.** Download `Alef-<version>-macos-arm64.zip`, unzip it
 and move `Alef.app` to Applications. The app is not signed with an Apple
 developer certificate, so macOS refuses to open it the first time. Either
 right-click the app, choose Open, and confirm, or clear the download flag:

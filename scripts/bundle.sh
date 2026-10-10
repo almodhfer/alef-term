@@ -42,4 +42,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+# Seal the bundle with an ad-hoc signature. It is not an Apple developer
+# identity, but it makes the bundle's signature cover its Info.plist and icon
+# rather than only the executable the linker signed.
+codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "note: could not ad-hoc sign $APP"
 echo "built $APP"
