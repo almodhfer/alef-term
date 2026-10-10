@@ -1,5 +1,5 @@
 //! Compare installed Arabic faces using the actual terminal shaping and renderer.
-use arabic_term::{color::Palette, font::{ArabicFont, Fonts}, render::{Canvas, DrawOpts, Renderer}, term::{Terminal, Vt}};
+use alef_term::{color::Palette, font::{ArabicFont, Fonts}, render::{Canvas, DrawOpts, Renderer}, term::{Terminal, Vt}};
 
 fn main() -> anyhow::Result<()> {
     let out = std::env::var("OUT_DIR").unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());

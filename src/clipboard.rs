@@ -93,7 +93,7 @@ fn save_image(image: &ImageData<'_>, directory: &Path) -> Result<String> {
     }
     loop {
         let id = NEXT_IMAGE.fetch_add(1, Ordering::Relaxed);
-        let path = directory.join(format!("arabic-term-clipboard-{}-{timestamp}-{id}.png", std::process::id()));
+        let path = directory.join(format!("alef-term-clipboard-{}-{timestamp}-{id}.png", std::process::id()));
         let quoted = crate::input::quoted_path(&path).context("Temporary path contains unsupported characters")?;
         let file = match options.open(&path) {
             Ok(file) => file,
@@ -130,7 +130,7 @@ mod tests {
         fn new() -> Self {
             let id = NEXT_IMAGE.fetch_add(1, Ordering::Relaxed);
             let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-            let path = std::env::temp_dir().join(format!("arabic-term-clipboard-test-{timestamp}-{id} لقطة 'شاشة'"));
+            let path = std::env::temp_dir().join(format!("alef-term-clipboard-test-{timestamp}-{id} لقطة 'شاشة'"));
             std::fs::create_dir(&path).unwrap();
             Self(path)
         }

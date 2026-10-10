@@ -1,6 +1,6 @@
 //! The kitty graphics protocol, and APC extraction from the byte stream.
 
-use arabic_term::term::{Terminal, Vt};
+use alef_term::term::{Terminal, Vt};
 
 fn b64(data: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

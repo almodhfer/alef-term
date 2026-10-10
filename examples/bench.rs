@@ -3,10 +3,10 @@
 //! Measures the cases a full-screen program actually produces, not just a
 //! static screen: a warm frame where nothing changed, a frame where one row
 //! changed, and a frame where every row changed, at a QHD-sized grid.
-use arabic_term::font::Fonts;
-use arabic_term::gpu::Gpu;
-use arabic_term::render::{Canvas, DrawOpts, Renderer};
-use arabic_term::term::{Terminal, Vt};
+use alef_term::font::Fonts;
+use alef_term::gpu::Gpu;
+use alef_term::render::{Canvas, DrawOpts, Renderer};
+use alef_term::term::{Terminal, Vt};
 use std::time::Instant;
 
 struct Rig {

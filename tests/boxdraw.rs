@@ -1,6 +1,6 @@
-use arabic_term::boxdraw;
-use arabic_term::color::Rgb;
-use arabic_term::render::{Canvas, Target};
+use alef_term::boxdraw;
+use alef_term::color::Rgb;
+use alef_term::render::{Canvas, Target};
 
 #[test]
 fn extra_leading_does_not_make_light_borders_heavy() {

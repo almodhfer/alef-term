@@ -1,8 +1,8 @@
 //! Drive a real full-screen program in a PTY and render what it produces.
-use arabic_term::font::Fonts;
-use arabic_term::pty::{Pty, PtyEvent};
-use arabic_term::render::{Canvas, DrawOpts, Renderer};
-use arabic_term::term::{Terminal, Vt};
+use alef_term::font::Fonts;
+use alef_term::pty::{Pty, PtyEvent};
+use alef_term::render::{Canvas, DrawOpts, Renderer};
+use alef_term::term::{Terminal, Vt};
 use std::time::{Duration, Instant};
 
 fn main() -> anyhow::Result<()> {
@@ -36,8 +36,8 @@ fn main() -> anyhow::Result<()> {
 
     println!("alt_screen={} title={:?} cursor=({},{}) visible={}", term.grid.in_alt(), term.title,
         term.grid.screen.cursor.row, term.grid.screen.cursor.col,
-        term.modes.contains(arabic_term::term::Modes::CURSOR_VISIBLE));
-    use arabic_term::term::Modes;
+        term.modes.contains(alef_term::term::Modes::CURSOR_VISIBLE));
+    use alef_term::term::Modes;
     println!("mouse: click(1000)={} drag(1002)={} motion(1003)={} sgr(1006)={} => grabbed={}",
         term.modes.contains(Modes::MOUSE_CLICK),
         term.modes.contains(Modes::MOUSE_DRAG),
@@ -48,7 +48,7 @@ fn main() -> anyhow::Result<()> {
         let line: String = term.grid.screen.rows[r]
             .cells
             .iter()
-            .filter(|c| !c.attrs.contains(arabic_term::grid::Attrs::WIDE_SPACER))
+            .filter(|c| !c.attrs.contains(alef_term::grid::Attrs::WIDE_SPACER))
             .map(|c| c.ch)
             .collect();
         println!("{:2}|{}|", r, line.trim_end());

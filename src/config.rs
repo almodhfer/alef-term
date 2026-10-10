@@ -1,6 +1,6 @@
 //! The configuration file.
 //!
-//! Read from `$ARABIC_TERM_CONFIG`, or `~/.config/arabic-term/config.toml`.
+//! Read from `$ALEF_TERM_CONFIG`, or `~/.config/alef-term/config.toml`.
 //! Every key is optional and the file may be absent; command-line flags
 //! override whatever the file says. Unknown keys are an error, so a typo is
 //! reported rather than silently ignored.
@@ -45,7 +45,7 @@ pub struct File {
     pub cursor_shape: Option<String>,
     pub cursor_blink: Option<bool>,
     pub visual_bell: Option<bool>,
-    /// A built-in theme, by name (`arabic-term --list-themes`); the base the
+    /// A built-in theme, by name (`alef-term --list-themes`); the base the
     /// colours below adjust.
     pub theme: Option<String>,
     /// "gpu" (the default) or "software".
@@ -70,11 +70,11 @@ pub struct Colors {
 
 /// Where the file lives, whether or not it exists.
 pub fn default_path() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("ARABIC_TERM_CONFIG") {
+    if let Some(p) = std::env::var_os("ALEF_TERM_CONFIG") {
         return Some(PathBuf::from(p));
     }
     let home = std::env::var_os("HOME")?;
-    Some(Path::new(&home).join(".config/arabic-term/config.toml"))
+    Some(Path::new(&home).join(".config/alef-term/config.toml"))
 }
 
 /// Parse the file at `path`. A missing file is an empty configuration.

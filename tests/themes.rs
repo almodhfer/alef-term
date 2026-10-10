@@ -1,8 +1,8 @@
 //! Built-in themes, the picker's filtering, and remembering a choice.
-use arabic_term::app::Config;
-use arabic_term::color::{find_theme, Palette, Rgb, Theme, THEMES};
-use arabic_term::config::{parse, save_theme, set_theme_line};
-use arabic_term::picker::ThemePicker;
+use alef_term::app::Config;
+use alef_term::color::{find_theme, Palette, Rgb, Theme, THEMES};
+use alef_term::config::{parse, save_theme, set_theme_line};
+use alef_term::picker::ThemePicker;
 
 fn theme(name: &str) -> &'static Theme {
     find_theme(name).unwrap_or_else(|| panic!("no theme {name}"))
@@ -149,7 +149,7 @@ fn the_example_file_takes_a_saved_theme() {
 
 #[test]
 fn saving_creates_the_file_and_never_clobbers_a_broken_one() {
-    let dir = std::env::temp_dir().join(format!("arabic-term-themes-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("alef-term-themes-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let path = dir.join("nested/config.toml");
 
@@ -166,9 +166,9 @@ fn saving_creates_the_file_and_never_clobbers_a_broken_one() {
 
 #[test]
 fn the_picker_is_painted_in_each_themes_colours() {
-    use arabic_term::font::Fonts;
-    use arabic_term::render::{Canvas, DrawOpts, PickerView, Renderer};
-    use arabic_term::term::Terminal;
+    use alef_term::font::Fonts;
+    use alef_term::render::{Canvas, DrawOpts, PickerView, Renderer};
+    use alef_term::term::Terminal;
 
     let t = Terminal::new(34, 70, 100);
     let mut fonts = Fonts::new(15.0, None).unwrap();

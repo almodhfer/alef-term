@@ -165,7 +165,7 @@ impl Terminal {
             prompts: Vec::new(),
             cwd: None,
             bidi_mode: BidiMode::default(),
-            title: String::from("arabic-term"),
+            title: String::from("alef-term"),
             replies: Vec::new(),
             damaged: true,
             images: Vec::new(),

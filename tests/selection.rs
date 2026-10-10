@@ -1,9 +1,9 @@
 //! Selection and copy, including across reordered Arabic and soft wraps.
 
-use arabic_term::font::Fonts;
-use arabic_term::layout::Layouter;
-use arabic_term::selection::{selected_text, Selection};
-use arabic_term::term::{BidiMode, Terminal, Vt};
+use alef_term::font::Fonts;
+use alef_term::layout::Layouter;
+use alef_term::selection::{selected_text, Selection};
+use alef_term::term::{BidiMode, Terminal, Vt};
 
 fn term(rows: usize, cols: usize, input: &str) -> Terminal {
     let mut t = Terminal::new(rows, cols, 100);
@@ -145,7 +145,7 @@ fn a_selection_reaches_into_scrollback() {
 
 mod gestures {
     use super::term;
-    use arabic_term::selection::{logical_line, url_at, word_at, Span};
+    use alef_term::selection::{logical_line, url_at, word_at, Span};
 
     #[test]
     fn double_click_takes_a_word() {

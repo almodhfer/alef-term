@@ -15,7 +15,7 @@ bundle:
 	@sh scripts/bundle.sh
 
 run: bundle
-	open -n "target/bundle/Arabic Term.app"
+	open -n "target/bundle/Alef.app"
 
 restart: bundle
 	@sh scripts/restart.sh
@@ -34,7 +34,7 @@ install:
 	@sh scripts/install-linux.sh
 
 run: build
-	@setsid nohup ./target/release/arabic-term </dev/null >/dev/null 2>&1 &
+	@setsid nohup ./target/release/alef-term </dev/null >/dev/null 2>&1 &
 
 restart: build
 	@sh scripts/restart-linux.sh

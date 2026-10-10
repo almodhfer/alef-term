@@ -1,10 +1,10 @@
 //! Theme changes must reach every primitive, including cached text layouts.
-use arabic_term::color::{Palette, Rgb, THEMES};
-use arabic_term::font::{Fonts, RasterGlyph};
-use arabic_term::render::{DrawOpts, Renderer, Target};
-use arabic_term::selection::{Selection, Span};
-use arabic_term::sixel::Image;
-use arabic_term::term::{Terminal, Vt};
+use alef_term::color::{Palette, Rgb, THEMES};
+use alef_term::font::{Fonts, RasterGlyph};
+use alef_term::render::{DrawOpts, Renderer, Target};
+use alef_term::selection::{Selection, Span};
+use alef_term::sixel::Image;
+use alef_term::term::{Terminal, Vt};
 
 #[derive(Default)]
 struct Paint {
@@ -270,7 +270,7 @@ fn pastel_application_text_stays_readable_on_light_backgrounds() {
     assert!(ink.2 > ink.1 && ink.1 > ink.0, "keep the original blue hue");
     assert!(paint.glyphs.iter().all(|&c| c == ink));
     assert!(paint.rects.iter().all(|&c| c == ink));
-    assert_eq!(rig.term.grid.viewport_row(0).cells[0].fg, arabic_term::color::Color::Rgb(original));
+    assert_eq!(rig.term.grid.viewport_row(0).cells[0].fg, alef_term::color::Color::Rgb(original));
     // Cached layouts/colours must follow a theme switch and an opt-out.
     rig.term.set_palette(Palette::dark());
     assert!(rig.draw(opts()).glyphs.iter().all(|&c| c == original));

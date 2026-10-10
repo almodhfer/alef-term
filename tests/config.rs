@@ -1,8 +1,8 @@
 //! The configuration file: parsing, validation and how it lands in Config.
-use arabic_term::app::Config;
-use arabic_term::color::Rgb;
-use arabic_term::config::{parse, parse_hex};
-use arabic_term::term::CursorShape;
+use alef_term::app::Config;
+use alef_term::color::Rgb;
+use alef_term::config::{parse, parse_hex};
+use alef_term::term::CursorShape;
 
 fn err(text: &str) -> String {
     match apply(text) {
@@ -88,9 +88,9 @@ fn typography_and_direction_can_be_configured_without_changing_the_theme() {
     assert_eq!(cfg.line_height, 1.2);
     assert_eq!(cfg.padding_x, 18.0);
     assert_eq!(cfg.padding_y, 12.0);
-    assert_eq!(cfg.bidi_mode, arabic_term::term::BidiMode::ForceLtr);
+    assert_eq!(cfg.bidi_mode, alef_term::term::BidiMode::ForceLtr);
     assert_eq!(cfg.palette.bg, Config::default().palette.bg);
-    assert_eq!(apply("").unwrap().bidi_mode, arabic_term::term::BidiMode::Auto);
+    assert_eq!(apply("").unwrap().bidi_mode, alef_term::term::BidiMode::Auto);
     for invalid in ["line_height = 0.5", "line_height = nan", "padding_x = -1",
                     "padding_y = inf", "bidi_mode = \"guess\"", "arabic_scale = nan"] {
         assert!(apply(invalid).is_err(), "accepted {invalid}");
@@ -99,12 +99,12 @@ fn typography_and_direction_can_be_configured_without_changing_the_theme() {
 
 #[test]
 fn minimum_contrast_is_validated_and_can_be_disabled() {
-    let mut cfg = arabic_term::app::Config::default();
+    let mut cfg = alef_term::app::Config::default();
     assert_eq!(cfg.minimum_contrast, 4.5);
-    arabic_term::config::parse("minimum_contrast = 1").unwrap().apply(&mut cfg).unwrap();
+    alef_term::config::parse("minimum_contrast = 1").unwrap().apply(&mut cfg).unwrap();
     assert_eq!(cfg.minimum_contrast, 1.0);
     for value in ["0.5", "22", "nan", "inf"] {
-        assert!(arabic_term::config::parse(&format!("minimum_contrast = {value}")).unwrap().apply(&mut cfg).is_err());
+        assert!(alef_term::config::parse(&format!("minimum_contrast = {value}")).unwrap().apply(&mut cfg).is_err());
         assert_eq!(cfg.minimum_contrast, 1.0);
     }
 }

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Alef: the letter أ as a reed-pen stroke, with a cursor to its left,
+       where the next letter of a right-to-left line would go. -->
+  <rect x="92" y="92" width="840" height="840" rx="189" fill="#14161b"/>
+  <g transform="translate(12 30)">
+  <path fill="none" stroke="#e8edf5" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"
+        d="M 668 196 C 630 176, 572 196, 572 238 C 572 272, 618 280, 662 268 L 556 318"/>
+  <path fill="#e8edf5" d="
+    M 580 400
+    L 656 366
+    C 668 500, 664 630, 640 748
+    C 632 776, 606 782, 590 762
+    C 576 640, 574 510, 580 400
+    Z"/>
+  <rect x="318" y="708" width="188" height="62" rx="8" fill="#62a0ea"/>
+  </g>
+</svg>

@@ -1,8 +1,12 @@
 [package]
-name = "arabic-term"
+name = "alef-term"
 version = "0.1.0"
 edition = "2021"
-description = "A terminal emulator that renders Arabic correctly: full bidi + contextual shaping."
+description = "Alef: an Arabic-first terminal emulator with full bidi and contextual shaping."
+license = "MIT"
+readme = "README.md"
+keywords = ["terminal", "arabic", "bidi", "rtl"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 winit = "0.30.13"

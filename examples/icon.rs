@@ -1,67 +1,59 @@
-//! Render the application icon: the letter ع on a dark rounded square.
-//! Writes a PNG of the requested size (default 1024) to the path given.
-use arabic_term::color::Rgb;
-use arabic_term::font::Fonts;
-use arabic_term::grid::Row;
-use arabic_term::layout::{Layouter, RowContext};
-use arabic_term::render::{Canvas, Target};
-use arabic_term::term::BidiMode;
+//! Write the application icon at a requested size.
+//!
+//! The icon is drawn once, in `assets/icon.svg`, and kept rendered at 1024 px
+//! in `assets/icon.png`. This scales that image down by averaging the source
+//! pixels each output pixel covers, so the packaging scripts need no image
+//! tools beyond the ones the build already has.
+//!
+//! Usage: `icon <out.png> [size]` (default 1024).
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let out = args.next().unwrap_or_else(|| "icon.png".into());
     let size: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(1024);
+    anyhow::ensure!(size > 0, "size must be positive");
 
-    let mut buf = vec![0u32; size * size];
-    let mut canvas = Canvas { buf: &mut buf, width: size, height: size };
-    // macOS icons are rounded squares inset from the canvas.
-    let bg = Rgb(0x14, 0x16, 0x1b);
-    let inset = size as f32 * 0.09;
-    let side = size as f32 - 2.0 * inset;
-    let radius = side * 0.225;
-    canvas.clear(Rgb(0, 0, 0));
-    // A solid rounded rect from horizontal strips.
-    for y in 0..size {
-        let fy = y as f32 + 0.5;
-        if fy < inset || fy > inset + side {
-            continue;
-        }
-        let dy = if fy < inset + radius {
-            inset + radius - fy
-        } else if fy > inset + side - radius {
-            fy - (inset + side - radius)
-        } else {
-            0.0
-        };
-        let dx = (radius * radius - dy * dy).max(0.0).sqrt();
-        let x0 = inset + radius - dx;
-        let x1 = inset + side - radius + dx;
-        canvas.fill_rect(x0, y as f32, x1 - x0, 1.0, bg);
-    }
-    // A prompt-coloured underline near the bottom, like a cursor bar.
-    let accent = Rgb(0x62, 0xa0, 0xea);
-    canvas.fill_rect(inset + side * 0.28, inset + side * 0.80, side * 0.44, side * 0.035, accent);
+    let source = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/icon.png");
+    let mut reader = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(source)?)).read_info()?;
+    let (w, h) = (reader.info().width as usize, reader.info().height as usize);
+    anyhow::ensure!(
+        reader.info().color_type == png::ColorType::Rgba && reader.info().bit_depth == png::BitDepth::Eight,
+        "{source}: expected 8-bit RGBA"
+    );
+    let mut src = vec![0u8; w * h * 4];
+    reader.next_frame(&mut src)?;
 
-    // The letter, shaped through the same pipeline as the terminal's text.
-    let px = size as f32 * 0.62;
-    let mut fonts = Fonts::new(px, None)?;
-    let row = Row { cells: vec![arabic_term::grid::Cell { ch: 'ع', ..Default::default() }], wrapped: false };
-    let mut layouter = Layouter::new();
-    let layout = layouter.layout_row_ctx(&row, 1, &mut fonts, BidiMode::Auto, true, RowContext { pre: "", post: "" });
-    for g in &layout.glyphs {
-        let Some(raster) = fonts.rasterize(g.font, g.glyph, g.px, 0.0) else { continue };
-        let x = (size as f32 - raster.width as f32) / 2.0;
-        let y = (size as f32 - raster.height as f32) / 2.0 - size as f32 * 0.03;
-        canvas.glyph(raster, x as i32, y as i32, Rgb(0xe8, 0xed, 0xf5));
-    }
-
-    // Outside the rounded square must be transparent, so write RGBA.
+    // Area-average each output pixel over the source rectangle it covers,
+    // weighting colour by alpha so the transparent corners do not darken the
+    // rounded edge.
     let mut rgba = Vec::with_capacity(size * size * 4);
-    for px in buf.iter() {
-        let (r, g, b) = ((px >> 16) as u8, (px >> 8) as u8, *px as u8);
-        let a = if r == 0 && g == 0 && b == 0 { 0 } else { 255 };
-        rgba.extend_from_slice(&[r, g, b, a]);
+    let (sx, sy) = (w as f64 / size as f64, h as f64 / size as f64);
+    for oy in 0..size {
+        let (y0, y1) = (oy as f64 * sy, (oy + 1) as f64 * sy);
+        for ox in 0..size {
+            let (x0, x1) = (ox as f64 * sx, (ox + 1) as f64 * sx);
+            let (mut acc, mut alpha, mut area) = ([0.0f64; 3], 0.0f64, 0.0f64);
+            for y in y0.floor() as usize..(y1.ceil() as usize).min(h) {
+                let wy = (y1.min(y as f64 + 1.0) - y0.max(y as f64)).max(0.0);
+                for x in x0.floor() as usize..(x1.ceil() as usize).min(w) {
+                    let wx = (x1.min(x as f64 + 1.0) - x0.max(x as f64)).max(0.0);
+                    let p = &src[(y * w + x) * 4..][..4];
+                    let weight = wx * wy;
+                    let a = p[3] as f64 / 255.0 * weight;
+                    for c in 0..3 {
+                        acc[c] += p[c] as f64 * a;
+                    }
+                    alpha += a;
+                    area += weight;
+                }
+            }
+            for c in acc {
+                rgba.push(if alpha > 0.0 { (c / alpha).round() as u8 } else { 0 });
+            }
+            rgba.push(if area > 0.0 { (alpha / area * 255.0).round() as u8 } else { 0 });
+        }
     }
+
     let file = std::fs::File::create(&out)?;
     let mut enc = png::Encoder::new(std::io::BufWriter::new(file), size as u32, size as u32);
     enc.set_color(png::ColorType::Rgba);

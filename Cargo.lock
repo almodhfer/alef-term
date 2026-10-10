@@ -47,6 +47,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "alef-term"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "bitflags 2.13.1",
+ "env_logger",
+ "fontdb",
+ "libc",
+ "log",
+ "memchr",
+ "png",
+ "pollster",
+ "portable-pty",
+ "rustybuzz",
+ "serde",
+ "softbuffer",
+ "swash",
+ "toml",
+ "unicode-bidi",
+ "unicode-normalization",
+ "unicode-width",
+ "vte",
+ "wgpu",
+ "winit",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -141,34 +169,6 @@ name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
-name = "arabic-term"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "bitflags 2.13.1",
- "env_logger",
- "fontdb",
- "libc",
- "log",
- "memchr",
- "png",
- "pollster",
- "portable-pty",
- "rustybuzz",
- "serde",
- "softbuffer",
- "swash",
- "toml",
- "unicode-bidi",
- "unicode-normalization",
- "unicode-width",
- "vte",
- "wgpu",
- "winit",
-]
 
 [[package]]
 name = "arboard"

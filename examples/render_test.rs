@@ -1,10 +1,10 @@
 //! Render a showcase screen offline to a PPM, without opening a window.
 //! Useful for eyeballing layout changes and for regression screenshots.
-use arabic_term::font::Fonts;
-use arabic_term::color::{default_theme, find_theme, Palette};
-use arabic_term::render::{Canvas, DrawOpts, Renderer};
-use arabic_term::selection::{Selection, Span};
-use arabic_term::term::{BidiMode, Terminal, Vt};
+use alef_term::font::Fonts;
+use alef_term::color::{default_theme, find_theme, Palette};
+use alef_term::render::{Canvas, DrawOpts, Renderer};
+use alef_term::selection::{Selection, Span};
+use alef_term::term::{BidiMode, Terminal, Vt};
 
 const SCRIPT: &str = concat!(
     "\x1b[1;36m~/مشاريع\x1b[0m \x1b[1;32m$\x1b[0m echo \"مرحبا بالعالم\"\r\n",
@@ -104,7 +104,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         DrawOpts::default()
     };
-    let command_palette = arabic_term::commands::CommandPalette::default();
+    let command_palette = alef_term::commands::CommandPalette::default();
     if commands { opts.commands = Some(&command_palette); }
     renderer.draw(&mut canvas, &term, &mut fonts, &opts);
 
@@ -115,7 +115,7 @@ fn main() -> anyhow::Result<()> {
         ppm.push(*px as u8);
     }
     let out = std::env::var("OUT").unwrap_or_else(|_| std::env::temp_dir()
-        .join("arabic-term-render.ppm").to_string_lossy().into_owned());
+        .join("alef-term-render.ppm").to_string_lossy().into_owned());
     std::fs::write(&out, ppm)?;
     println!("wrote {out} {w}x{h}  cell={}x{}", fonts.cell_w, fonts.cell_h);
     Ok(())

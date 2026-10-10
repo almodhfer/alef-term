@@ -1,7 +1,7 @@
 //! Terminal shortcuts on both platforms: the macOS table stays on Command, and
 //! Linux leaves plain Ctrl keys to the program.
-use arabic_term::commands::{Action, ACTIONS};
-use arabic_term::shortcuts::{Platform, Shortcut};
+use alef_term::commands::{Action, ACTIONS};
+use alef_term::shortcuts::{Platform, Shortcut};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 fn key(s: &str) -> Key {

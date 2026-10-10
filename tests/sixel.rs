@@ -1,8 +1,8 @@
 //! Sixel decoding.
 
-use arabic_term::sixel::decode;
+use alef_term::sixel::decode;
 
-fn px(img: &arabic_term::sixel::Image, x: u32, y: u32) -> [u8; 4] {
+fn px(img: &alef_term::sixel::Image, x: u32, y: u32) -> [u8; 4] {
     let i = (y * img.width + x) as usize * 4;
     [img.rgba[i], img.rgba[i + 1], img.rgba[i + 2], img.rgba[i + 3]]
 }

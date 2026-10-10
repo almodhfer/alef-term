@@ -1,4 +1,4 @@
-use arabic_term::{app::Config, cli, commands::{Action, CommandPalette}, config, input, pty};
+use alef_term::{app::Config, cli, commands::{Action, CommandPalette}, config, input, pty};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use winit::keyboard::{Key, KeyCode, PhysicalKey};
@@ -7,7 +7,7 @@ struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
         static ID: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!("arabic-term-daily-{}-{}", std::process::id(), ID.fetch_add(1, Ordering::Relaxed)));
+        let path = std::env::temp_dir().join(format!("alef-term-daily-{}-{}", std::process::id(), ID.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir(&path).unwrap();
         Self(path)
     }
@@ -87,7 +87,7 @@ fn reload_resets_removed_settings_and_preserves_cli_overrides_and_colors() {
     let (cfg, _) = cli::parse(vec!["--config".into(), path.to_str().unwrap().into(), "--font-size".into(), "19".into()]).unwrap();
     assert_eq!(cfg.font_size, 19.0);
     assert_eq!(cfg.padding_x, 30.0);
-    assert_eq!(cfg.palette.bg, arabic_term::color::Rgb(0x12, 0x34, 0x56));
+    assert_eq!(cfg.palette.bg, alef_term::color::Rgb(0x12, 0x34, 0x56));
     temp.config("font_size = 20\n");
     let reloaded = config::reload(&cfg).unwrap();
     assert_eq!(reloaded.font_size, 19.0);
@@ -105,7 +105,7 @@ fn invalid_cli_values_fail_before_opening_a_window() {
     let path = temp.config("");
     for args in [vec!["--size", "0x24"], vec!["--font-size", "nan"], vec!["--scroll-lines", "inf"],
                  vec!["--size", "999999x99"], vec!["--theme", "missing-theme"],
-                 vec!["--font-size"], vec!["--working-directory", "/no/such/folder/arabic-term"],
+                 vec!["--font-size"], vec!["--working-directory", "/no/such/folder/alef-term"],
                  vec!["--typo"]] {
         let mut argv = vec!["--config".into(), path.to_str().unwrap().into()];
         argv.extend(args.iter().map(|s| s.to_string()));
@@ -179,10 +179,10 @@ fn arabic_font_commands_are_discoverable_by_style_and_family() {
     assert_eq!(palette.matches().len(), if cfg!(target_os = "macos") { 4 } else { 3 });
     palette.backspace(true);
     palette.push("calligraphic");
-    assert_eq!(palette.current(), Some(Action::ArabicFont(arabic_term::font::ArabicFont::Scheherazade)));
+    assert_eq!(palette.current(), Some(Action::ArabicFont(alef_term::font::ArabicFont::Scheherazade)));
     palette.backspace(true);
     palette.push("amiri");
-    assert_eq!(palette.current(), Some(Action::ArabicFont(arabic_term::font::ArabicFont::Amiri)));
+    assert_eq!(palette.current(), Some(Action::ArabicFont(alef_term::font::ArabicFont::Amiri)));
 }
 
 #[test]

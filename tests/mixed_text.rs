@@ -1,8 +1,8 @@
 //! Mixed-direction regressions: the English word, punctuation and caret must
 //! agree with the visual cell map while the terminal stores logical text.
-use arabic_term::font::Fonts;
-use arabic_term::layout::Layouter;
-use arabic_term::term::{BidiMode, Terminal, Vt};
+use alef_term::font::Fonts;
+use alef_term::layout::Layouter;
+use alef_term::term::{BidiMode, Terminal, Vt};
 
 fn visual(text: &str, mode: BidiMode) -> String {
     let mut fonts = Fonts::new(16.0, None).unwrap();
@@ -102,7 +102,7 @@ fn file_extensions_and_paths_keep_their_terminal_order() {
 
 #[test]
 fn changing_direction_preserves_logical_copy_order() {
-    use arabic_term::selection::{selected_text, Selection};
+    use alef_term::selection::{selected_text, Selection};
     let mut term = Terminal::new(1, 80, 0);
     let text = "افتح الملف README ثم احفظ التغييرات";
     Vt::new().feed(&mut term, text.as_bytes());

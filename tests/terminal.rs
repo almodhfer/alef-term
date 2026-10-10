@@ -1,8 +1,8 @@
 //! Behavioural tests for the VT layer and the grid model.
 
-use arabic_term::color::Color;
-use arabic_term::grid::Attrs;
-use arabic_term::term::{Modes, Terminal, Vt};
+use alef_term::color::Color;
+use alef_term::grid::Attrs;
+use alef_term::term::{Modes, Terminal, Vt};
 
 fn run(rows: usize, cols: usize, input: &str) -> Terminal {
     let mut t = Terminal::new(rows, cols, 100);
@@ -79,8 +79,8 @@ fn autowrap_is_deferred_until_the_next_character() {
 fn sgr_truecolor_semicolon_and_colon_forms() {
     let t = run(2, 40, "\x1b[38;2;10;20;30mA\x1b[38:2::40:50:60mB");
     let c = &t.grid.screen.rows[0].cells;
-    assert_eq!(c[0].fg, Color::Rgb(arabic_term::color::Rgb(10, 20, 30)));
-    assert_eq!(c[1].fg, Color::Rgb(arabic_term::color::Rgb(40, 50, 60)));
+    assert_eq!(c[0].fg, Color::Rgb(alef_term::color::Rgb(10, 20, 30)));
+    assert_eq!(c[1].fg, Color::Rgb(alef_term::color::Rgb(40, 50, 60)));
 }
 
 #[test]
@@ -404,7 +404,7 @@ fn images_are_pruned_once_they_fall_out_of_scrollback() {
 
 #[test]
 fn decscusr_sets_the_cursor_shape_and_blink() {
-    use arabic_term::term::{CursorShape, CursorStyle};
+    use alef_term::term::{CursorShape, CursorStyle};
     let t = run(2, 10, "\x1b[5 q");
     assert_eq!(t.cursor_style, CursorStyle { shape: CursorShape::Bar, blink: Some(true) });
     let t = run(2, 10, "\x1b[4 q");
@@ -437,7 +437,7 @@ fn osc_colour_queries_are_answered_in_xterm_form() {
 
 #[test]
 fn combined_colour_queries_report_the_entire_current_theme() {
-    use arabic_term::color::Palette;
+    use alef_term::color::Palette;
     let mut t = run(2, 10, "");
     let mut vt = Vt::new();
     for palette in [Palette::light(), Palette::dark()] {
@@ -452,14 +452,14 @@ fn combined_colour_queries_report_the_entire_current_theme() {
         }
     }
     vt.feed(&mut t, b"\x1b]10;rgb:12/34/56;rgb:ab/cd/ef;rgb:98/76/54\x07");
-    assert_eq!(t.palette.fg, arabic_term::color::Rgb(0x12, 0x34, 0x56));
-    assert_eq!(t.palette.bg, arabic_term::color::Rgb(0xab, 0xcd, 0xef));
-    assert_eq!(t.palette.cursor, arabic_term::color::Rgb(0x98, 0x76, 0x54));
+    assert_eq!(t.palette.fg, alef_term::color::Rgb(0x12, 0x34, 0x56));
+    assert_eq!(t.palette.bg, alef_term::color::Rgb(0xab, 0xcd, 0xef));
+    assert_eq!(t.palette.cursor, alef_term::color::Rgb(0x98, 0x76, 0x54));
 }
 
 #[test]
 fn a_full_reset_preserves_the_configured_theme_and_osc_reset_defaults() {
-    use arabic_term::color::{Palette, Rgb, THEMES};
+    use alef_term::color::{Palette, Rgb, THEMES};
     let mut t = run(2, 10, "");
     let mut vt = Vt::new();
     for theme in THEMES {
@@ -476,7 +476,7 @@ fn a_full_reset_preserves_the_configured_theme_and_osc_reset_defaults() {
         assert_eq!(t.palette.search_bg, palette.search_bg);
         assert_eq!(t.palette.search_current_bg, palette.search_current_bg);
         assert_eq!(line(&t, 0), "");
-        assert_eq!(t.grid.screen.cursor.attrs, arabic_term::grid::Attrs::empty());
+        assert_eq!(t.grid.screen.cursor.attrs, alef_term::grid::Attrs::empty());
 
         vt.feed(&mut t, b"\x1b]10;rgb:00/00/00;rgb:00/00/00;rgb:00/00/00\x07\x1b]110\x07\x1b]111\x07\x1b]112\x07\x1b]104\x07");
         assert_eq!(t.palette.fg, palette.fg);
@@ -488,7 +488,7 @@ fn a_full_reset_preserves_the_configured_theme_and_osc_reset_defaults() {
 
 #[test]
 fn osc_colour_sets_and_resets() {
-    use arabic_term::color::Rgb;
+    use alef_term::color::Rgb;
     let mut t = run(2, 10, "");
     let (fg0, bg0) = (t.palette.fg, t.palette.bg);
     let mut vt = Vt::new();
@@ -684,7 +684,7 @@ fn the_colour_scheme_is_reported_when_asked() {
     let mut t = run(4, 20, "\x1b[?996n");
     assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?997;1n", "the default theme is dark");
     t.replies.clear();
-    t.set_palette(arabic_term::color::Palette::light());
+    t.set_palette(alef_term::color::Palette::light());
     Vt::new().feed(&mut t, b"\x1b[?996n");
     assert_eq!(String::from_utf8_lossy(&t.replies), "\x1b[?997;2n");
 }
@@ -699,7 +699,7 @@ fn mode_2031_is_known_and_reported() {
 
 #[test]
 fn a_theme_change_is_announced_only_to_programs_that_asked() {
-    use arabic_term::color::Palette;
+    use alef_term::color::Palette;
     let mut t = run(4, 20, "");
     t.set_palette(Palette::light());
     assert!(t.replies.is_empty(), "nothing unasked without mode 2031");

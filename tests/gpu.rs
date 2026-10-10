@@ -1,10 +1,10 @@
 //! The GPU compositor must reproduce the software canvas: same layout, same
 //! layering, same blends. Render a busy screen both ways and compare pixels.
-use arabic_term::color::Palette;
-use arabic_term::font::Fonts;
-use arabic_term::gpu::Gpu;
-use arabic_term::render::{Canvas, DrawOpts, Renderer, Target};
-use arabic_term::term::{Terminal, Vt};
+use alef_term::color::Palette;
+use alef_term::font::Fonts;
+use alef_term::gpu::Gpu;
+use alef_term::render::{Canvas, DrawOpts, Renderer, Target};
+use alef_term::term::{Terminal, Vt};
 
 const SCRIPT: &str = concat!(
     "\x1b[1;36m~/مشاريع\x1b[0m \x1b[1;32m$\x1b[0m echo \"مرحبا بالعالم\" 🎉 ✅\r\n",
@@ -52,10 +52,10 @@ fn check_gpu_frame(family: Option<&str>) {
         return;
     };
     // Switch with the same layouts and GPU atlas still cached.
-    let mut commands = arabic_term::commands::CommandPalette::default();
+    let mut commands = alef_term::commands::CommandPalette::default();
     commands.push("settings");
     let titles = vec!["Shell 1".to_string(), "مشاريع".to_string(), "htop".to_string()];
-    let tabs = arabic_term::render::TabBar { titles: &titles, active: 1 };
+    let tabs = alef_term::render::TabBar { titles: &titles, active: 1 };
     for palette in [Palette::dark(), Palette::light()] {
         term.set_palette(palette);
         for opts in [

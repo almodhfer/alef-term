@@ -1,6 +1,6 @@
 //! Key encoding: what actually goes down the pipe when you press a key.
 
-use arabic_term::keys::{encode, KeyContext};
+use alef_term::keys::{encode, KeyContext};
 use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 
 fn ch(s: &str) -> Key {

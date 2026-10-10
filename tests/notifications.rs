@@ -1,6 +1,6 @@
 //! Notifications programs ask for: OSC 9, 777 and 99, and the command that
 //! puts them on the desktop.
-use arabic_term::term::{Notification, Terminal, Vt};
+use alef_term::term::{Notification, Terminal, Vt};
 
 fn feed(input: &str) -> Vec<Notification> {
     let mut t = Terminal::new(2, 20, 10);
@@ -53,7 +53,7 @@ fn notifications_are_bounded_in_size_and_number() {
 
 #[test]
 fn the_desktop_command_passes_text_as_arguments_not_code() {
-    let cmd = arabic_term::notify::command("-rf \"x\"", "<b>&</b>");
+    let cmd = alef_term::notify::command("-rf \"x\"", "<b>&</b>");
     let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
     if cfg!(target_os = "macos") {
         assert_eq!(cmd.get_program(), "osascript");

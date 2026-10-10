@@ -1,7 +1,7 @@
 //! Scroll easing, coalescing, and the grid's absolute line indexing.
 
-use arabic_term::scroll::Scroller;
-use arabic_term::term::{Terminal, Vt};
+use alef_term::scroll::Scroller;
+use alef_term::term::{Terminal, Vt};
 
 const FRAME: f32 = 1.0 / 60.0;
 
@@ -229,7 +229,7 @@ fn scroll_up_no_longer_adjusts_the_view_offset_itself() {
 }
 
 mod wheel {
-    use arabic_term::scroll::{wheel_to_lines, WheelDelta, WheelTuning};
+    use alef_term::scroll::{wheel_to_lines, WheelDelta, WheelTuning};
 
     const CELL_H: f32 = 34.0; // a retina cell
 

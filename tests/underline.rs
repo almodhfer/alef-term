@@ -1,10 +1,10 @@
 //! Underline styles and colours: what `SGR 4:n`, 21, 24, 58 and 59 store, and
 //! how a wavy underline is drawn.
-use arabic_term::color::{Color, Rgb};
-use arabic_term::font::Fonts;
-use arabic_term::grid::Attrs;
-use arabic_term::render::{Canvas, DrawOpts, Renderer};
-use arabic_term::term::{Terminal, Vt};
+use alef_term::color::{Color, Rgb};
+use alef_term::font::Fonts;
+use alef_term::grid::Attrs;
+use alef_term::render::{Canvas, DrawOpts, Renderer};
+use alef_term::term::{Terminal, Vt};
 
 const STYLES: Attrs = Attrs::UNDERLINE_STYLES;
 

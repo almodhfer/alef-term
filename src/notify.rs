@@ -42,9 +42,9 @@ pub fn command(title: &str, body: &str) -> Command {
         // escaped; the summary line is plain text.
         let mut cmd = Command::new("notify-send");
         cmd.args([
-            "--app-name=Arabic Term",
-            "--icon=arabic-term",
-            "--hint=string:desktop-entry:arabic-term",
+            "--app-name=Alef",
+            "--icon=alef-term",
+            "--hint=string:desktop-entry:alef-term",
             "--",
             title,
             &markup_escape(body),

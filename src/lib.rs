@@ -1,4 +1,4 @@
-//! arabic-term: a terminal emulator that renders Arabic correctly.
+//! alef-term: a terminal emulator that renders Arabic correctly.
 //!
 //! The grid stores text in logical order exactly as the client program writes
 //! it; bidi reordering and Arabic shaping happen at render time, so column

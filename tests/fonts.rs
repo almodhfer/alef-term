@@ -1,8 +1,8 @@
 //! Font stack: coverage and fallback.
 
-use arabic_term::font::{Fonts, Slot, Style};
-use arabic_term::layout::Layouter;
-use arabic_term::term::{BidiMode, Terminal, Vt};
+use alef_term::font::{Fonts, Slot, Style};
+use alef_term::layout::Layouter;
+use alef_term::term::{BidiMode, Terminal, Vt};
 
 /// Whether any real installed font has `c`, as opposed to a placeholder
 /// face that claims every character.
@@ -149,7 +149,7 @@ fn changing_fonts_reuses_the_loaded_file_bytes() {
 
 #[test]
 fn installed_arabic_presets_preserve_marks_and_cell_mapping() {
-    use arabic_term::{font::ArabicFont, layout::Layouter, term::{Terminal, Vt}};
+    use alef_term::{font::ArabicFont, layout::Layouter, term::{Terminal, Vt}};
     for choice in [ArabicFont::Naskh, ArabicFont::Amiri, ArabicFont::Scheherazade, ArabicFont::Geeza] {
         let mut fonts = Fonts::with_families(32.0, None, None, Some(choice.family())).unwrap();
         if fonts.arabic_family != choice.family() { continue; }
@@ -179,7 +179,7 @@ fn installed_arabic_presets_preserve_marks_and_cell_mapping() {
 
 #[test]
 fn editor_hamza_forms_shape_like_normal_arabic_in_every_preset() {
-    use arabic_term::{font::ArabicFont, layout::Layouter, term::{Terminal, Vt}};
+    use alef_term::{font::ArabicFont, layout::Layouter, term::{Terminal, Vt}};
     let editor = "\"title\": \"\u{FE88}نشاء الر\u{FE8C}يسية الم\u{FE86}شرات \u{FE84}فضل \u{FE82}فاق README\"";
     let plain = "\"title\": \"إنشاء الرئيسية المؤشرات أفضل آفاق README\"";
     for choice in [ArabicFont::Naskh, ArabicFont::Amiri, ArabicFont::Scheherazade, ArabicFont::Geeza] {
@@ -194,7 +194,7 @@ fn editor_hamza_forms_shape_like_normal_arabic_in_every_preset() {
             let (actual, expected) = (&layouts[0], &layouts[1]);
             assert_eq!(actual.visual_cells, expected.visual_cells, "{}: visual columns", choice.family());
             assert_eq!(actual.cell_to_column, expected.cell_to_column, "{}: cursor columns", choice.family());
-            let glyphs = |layout: &arabic_term::layout::RowLayout| layout.glyphs.iter()
+            let glyphs = |layout: &alef_term::layout::RowLayout| layout.glyphs.iter()
                 .map(|g| (g.font, g.glyph, g.x, g.y, g.px, g.cell)).collect::<Vec<_>>();
             // Compare contextual shapes and placement as well as glyph coverage.
             assert_eq!(glyphs(actual), glyphs(expected), "{} {style:?}: editor shaping", choice.family());

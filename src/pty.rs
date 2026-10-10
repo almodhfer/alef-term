@@ -107,7 +107,7 @@ impl Pty {
         }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        cmd.env("TERM_PROGRAM", "arabic-term");
+        cmd.env("TERM_PROGRAM", "alef-term");
         configure_locale(&mut cmd);
         // Start where asked (a new window inherits its parent's directory),
         // else where we were started.

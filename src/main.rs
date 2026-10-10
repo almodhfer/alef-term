@@ -1,16 +1,16 @@
-use arabic_term::app;
-use arabic_term::color::THEMES;
+use alef_term::app;
+use alef_term::color::THEMES;
 
 use winit::event_loop::{ControlFlow, EventLoop};
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
-        if cfg!(debug_assertions) { "arabic_term=debug,warn" } else { "warn" }
+        if cfg!(debug_assertions) { "alef_term=debug,warn" } else { "warn" }
     )).init();
-    let (cfg, command) = arabic_term::cli::parse(std::env::args().skip(1))?;
+    let (cfg, command) = alef_term::cli::parse(std::env::args().skip(1))?;
     match command {
-        arabic_term::cli::Command::Help => {
-            println!(r#"arabic-term — a terminal that renders Arabic correctly
+        alef_term::cli::Command::Help => {
+            println!(r#"alef-term — a terminal that renders Arabic correctly
 
 Options:
   --font-size <px>              base font size (default 15)
@@ -26,7 +26,7 @@ Options:
   --theme <name>               colour theme (default dark)
   --list-themes                print the built-in themes
   --renderer <gpu|software>    drawing backend (default gpu)
-  --config <path>              settings file (default ~/.config/arabic-term/config.toml)
+  --config <path>              settings file (default ~/.config/alef-term/config.toml)
   --check-config               validate settings without opening a window
   --version                    print version
   --help                       show this help
@@ -48,19 +48,19 @@ Keys:
   Cmd R                       cycle text direction (auto/LTR/RTL)"#);
             return Ok(());
         }
-        arabic_term::cli::Command::Version => {
-            println!("arabic-term {}", env!("CARGO_PKG_VERSION"));
+        alef_term::cli::Command::Version => {
+            println!("alef-term {}", env!("CARGO_PKG_VERSION"));
             return Ok(());
         }
-        arabic_term::cli::Command::ListThemes => {
+        alef_term::cli::Command::ListThemes => {
             for t in THEMES { println!("{:<18} {}", t.name, t.title); }
             return Ok(());
         }
-        arabic_term::cli::Command::CheckConfig => {
+        alef_term::cli::Command::CheckConfig => {
             println!("Configuration is valid");
             return Ok(());
         }
-        arabic_term::cli::Command::Run => {}
+        alef_term::cli::Command::Run => {}
     }
 
     let event_loop = EventLoop::<app::Wake>::with_user_event().build()?;

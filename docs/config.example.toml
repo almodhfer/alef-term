@@ -1,4 +1,4 @@
-# arabic-term configuration. Copy to ~/.config/arabic-term/config.toml.
+# alef-term configuration. Copy to ~/.config/alef-term/config.toml.
 # Every key is optional; command-line flags override the file.
 
 # font = "JetBrainsMono Nerd Font Mono"
@@ -26,7 +26,7 @@ cursor_blink = false
 visual_bell = true
 
 minimum_contrast = 4.5      # 1..21; 1 preserves exact application ink colours
-theme = "dark"              # see `arabic-term --list-themes`, or press Cmd Shift T
+theme = "dark"              # see `alef-term --list-themes`, or press Cmd Shift T
 renderer = "gpu"            # gpu | software (the fallback when there is no GPU)
 
 [colors]

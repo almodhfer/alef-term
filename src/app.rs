@@ -121,7 +121,7 @@ impl Default for Config {
             theme: crate::color::default_theme(),
             colors: Default::default(),
             config_path: None,
-            software: std::env::var_os("ARABIC_TERM_SOFTWARE").is_some(),
+            software: std::env::var_os("ALEF_TERM_SOFTWARE").is_some(),
         }
     }
 }
@@ -225,7 +225,7 @@ pub struct Pane {
     frames: FramePacer,
     pty_pending: bool,
     refresh_millihertz: Option<u32>,
-    /// Frame timing, enabled with `ARABIC_TERM_PROFILE=1`.
+    /// Frame timing, enabled with `ALEF_TERM_PROFILE=1`.
     profile: Option<Profile>,
     /// Cursor blink: the current phase and when it next flips. Typing resets
     /// the phase to visible, so the cursor never vanishes under the fingers.
@@ -341,7 +341,7 @@ impl Pane {
             mouse_bypass: false,
             commands: None,
             notice: cfg.startup_warning.as_ref().map(|text| (text.clone(), std::time::Instant::now() + std::time::Duration::from_secs(10))),
-            session_title: "arabic-term".into(),
+            session_title: "alef-term".into(),
             cfg,
             start_dir,
             request: None,
@@ -378,7 +378,7 @@ impl Pane {
             wheel_remainder: 0.0,
             last_frame: None,
             scrollbar_fade: 0.0,
-            profile: std::env::var_os("ARABIC_TERM_PROFILE").map(|_| Profile::new()),
+            profile: std::env::var_os("ALEF_TERM_PROFILE").map(|_| Profile::new()),
             blink_on: true,
             blink_at: std::time::Instant::now() + BLINK_HALF,
             bell_at: None,
@@ -905,7 +905,7 @@ impl Pane {
 
     /// The title shown for this session: the program's, or the session name.
     fn tab_title(&self) -> String {
-        if self.term.title.is_empty() || self.term.title == "arabic-term" {
+        if self.term.title.is_empty() || self.term.title == "alef-term" {
             self.session_title.clone()
         } else {
             self.term.title.clone()
@@ -1025,10 +1025,10 @@ impl Pane {
     fn show_notification(&mut self, n: crate::term::Notification) {
         let title = if !n.title.is_empty() {
             n.title
-        } else if self.term.title != "arabic-term" && !self.term.title.is_empty() {
+        } else if self.term.title != "alef-term" && !self.term.title.is_empty() {
             self.term.title.clone()
         } else {
-            "Arabic Term".to_string()
+            "Alef".to_string()
         };
         if self.focused {
             let text = if n.body.is_empty() { title } else { format!("{title}: {}", n.body) };
@@ -1258,11 +1258,11 @@ impl Pane {
             attrs.with_tabbing_identifier(&self.tab_group)
         };
         // The X11 class and Wayland app id, which the desktop matches against
-        // arabic-term.desktop for the launcher icon and window grouping.
+        // alef-term.desktop for the launcher icon and window grouping.
         #[cfg(all(unix, not(target_os = "macos")))]
         let attrs = {
             use winit::platform::x11::WindowAttributesExtX11;
-            attrs.with_name("arabic-term", "arabic-term")
+            attrs.with_name("alef-term", "alef-term")
         };
         let win = Arc::new(el.create_window(attrs).expect("create window"));
         win.set_ime_allowed(true); // needed for Arabic input methods
@@ -1281,7 +1281,7 @@ impl Pane {
             match Gpu::new(win.clone()) {
                 Ok(g) => Some(g),
                 Err(e) => {
-                    eprintln!("arabic-term: no GPU ({e:#}); drawing in software");
+                    eprintln!("alef-term: no GPU ({e:#}); drawing in software");
                     None
                 }
             }
@@ -1727,7 +1727,7 @@ impl Pane {
                     p.record([t1 - t0, t2 - t1, t3 - t2]);
                 }
 
-                let title = if self.term.title == "arabic-term" { &self.session_title } else { &self.term.title };
+                let title = if self.term.title == "alef-term" { &self.session_title } else { &self.term.title };
                 if win.title() != *title {
                     win.set_title(title);
                 }
@@ -1958,7 +1958,7 @@ impl App {
     fn open_pane(&mut self, el: &ActiveEventLoop, start_dir: Option<String>, tab_group: Option<String>) {
         let group = tab_group.unwrap_or_else(|| {
             self.next_group += 1;
-            format!("arabic-term-{}-{}", std::process::id(), self.next_group)
+            format!("alef-term-{}-{}", std::process::id(), self.next_group)
         });
         let mut cfg = self.cfg.clone();
         // A startup command belongs to the first window only.
@@ -1975,7 +1975,7 @@ impl App {
                     self.panes.push(pane);
                 }
             }
-            Err(e) => eprintln!("arabic-term: cannot open a window: {e:#}"),
+            Err(e) => eprintln!("alef-term: cannot open a window: {e:#}"),
         }
     }
 }
@@ -2058,7 +2058,7 @@ impl ApplicationHandler<Wake> for App {
                 }
                 if let Some(path) = &self.cfg.config_path {
                     if let Err(e) = crate::config::save_theme(path, t.name) {
-                        eprintln!("arabic-term: could not save the theme: {e:#}");
+                        eprintln!("alef-term: could not save the theme: {e:#}");
                     }
                 }
             }

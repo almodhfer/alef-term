@@ -199,7 +199,7 @@ impl Gpu {
         }))
         .context("no graphics adapter")?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("arabic-term"),
+            label: Some("alef-term"),
             ..Default::default()
         }))
         .context("request device")?;
@@ -239,7 +239,7 @@ impl Gpu {
         }))
         .context("no graphics adapter")?;
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("arabic-term"),
+            label: Some("alef-term"),
             ..Default::default()
         }))
         .context("request device")?;

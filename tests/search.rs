@@ -1,7 +1,7 @@
 //! Scrollback search: what is found, where, and how fast.
-use arabic_term::search::{Index, Search};
-use arabic_term::selection::Span;
-use arabic_term::term::{Terminal, Vt};
+use alef_term::search::{Index, Search};
+use alef_term::selection::Span;
+use alef_term::term::{Terminal, Vt};
 
 fn term(rows: usize, cols: usize, input: &str) -> Terminal {
     let mut t = Terminal::new(rows, cols, 100_000);
@@ -143,8 +143,8 @@ fn indexing_and_searching_a_large_history_is_fast() {
 
 #[test]
 fn hits_and_the_bar_are_painted() {
-    use arabic_term::font::Fonts;
-    use arabic_term::render::{Canvas, DrawOpts, Renderer, SearchBar};
+    use alef_term::font::Fonts;
+    use alef_term::render::{Canvas, DrawOpts, Renderer, SearchBar};
     let t = term(6, 30, "find the needle here\r\nand another needle");
     let mut ix = Index::default();
     ix.build(&t.grid);
@@ -167,7 +167,7 @@ fn hits_and_the_bar_are_painted() {
     renderer.draw(&mut canvas, &t, &mut fonts, &opts);
 
     let pal = &t.palette;
-    let count = |c: arabic_term::color::Rgb| buf.iter().filter(|&&p| p == c.pack()).count();
+    let count = |c: alef_term::color::Rgb| buf.iter().filter(|&&p| p == c.pack()).count();
     assert!(count(pal.search_bg) > 50, "the other hit is highlighted");
     assert!(count(pal.search_current_bg) > 50, "the current hit is highlighted more strongly");
     // The bar's border is in the cursor colour, at the top right.

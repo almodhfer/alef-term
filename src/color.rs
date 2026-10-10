@@ -141,7 +141,7 @@ pub static THEMES: &[Theme] = &[
     // are thinner than Latin mono stems and wash out on low-contrast themes.
     Theme {
         name: "dark",
-        title: "Arabic Term Dark",
+        title: "Alef Dark",
         ansi: [
             hex(0x1c1f26), hex(0xe0606a), hex(0x7cc370), hex(0xe0b25f),
             hex(0x62a0ea), hex(0xb482dc), hex(0x5cc0c0), hex(0xc5cbd6),
@@ -159,7 +159,7 @@ pub static THEMES: &[Theme] = &[
     // yellows and cyans are darkened so they stay legible on white.
     Theme {
         name: "light",
-        title: "Arabic Term Light",
+        title: "Alef Light",
         ansi: [
             hex(0x2e333d), hex(0xc02834), hex(0x2a7f2e), hex(0x9a6b00),
             hex(0x1f5fc4), hex(0x8a3fb8), hex(0x0e7c86), hex(0x6b7280),

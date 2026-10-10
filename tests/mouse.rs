@@ -1,7 +1,7 @@
 //! Mouse event encoding — the path that had no coverage at all, which is how
 //! the wheel came to be missing from it.
 
-use arabic_term::mouse::{encode, is_wheel, BTN_LEFT, BTN_RIGHT, BTN_WHEEL_DOWN, BTN_WHEEL_UP};
+use alef_term::mouse::{encode, is_wheel, BTN_LEFT, BTN_RIGHT, BTN_WHEEL_DOWN, BTN_WHEEL_UP};
 use winit::keyboard::ModifiersState;
 
 fn none() -> ModifiersState {
@@ -70,7 +70,7 @@ fn sgr_expresses_coordinates_the_legacy_encoding_cannot() {
 
 #[test]
 fn motion_adds_32_to_the_button() {
-    use arabic_term::mouse::{BTN_NONE, MOTION};
+    use alef_term::mouse::{BTN_NONE, MOTION};
     // Drag with the left button held.
     assert_eq!(enc(MOTION + BTN_LEFT, true, 2, 3, none(), true), b"\x1b[<32;4;3M");
     // Any-motion with nothing held reports button 3, so 35.
@@ -86,7 +86,7 @@ fn motion_adds_32_to_the_button() {
 /// it goes wrong as soon as any scrollback exists, not just while scrolled back.
 #[test]
 fn reported_rows_are_viewport_relative_not_absolute() {
-    use arabic_term::term::{Terminal, Vt};
+    use alef_term::term::{Terminal, Vt};
     let mut t = Terminal::new(4, 20, 500);
     let mut vt = Vt::new();
     for i in 0..50 {

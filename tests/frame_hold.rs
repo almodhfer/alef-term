@@ -1,7 +1,7 @@
 //! Synchronized output (DEC mode 2026): holding frames during an update.
 
-use arabic_term::frame_hold::{FrameHold, TIMEOUT};
-use arabic_term::term::{Modes, Terminal, Vt};
+use alef_term::frame_hold::{FrameHold, TIMEOUT};
+use alef_term::term::{Modes, Terminal, Vt};
 use std::time::{Duration, Instant};
 
 fn t0() -> Instant {

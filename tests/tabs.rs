@@ -1,7 +1,7 @@
 //! The tab bar: where it sits, and how it marks the tab on show.
-use arabic_term::font::Fonts;
-use arabic_term::render::{tab_bar_height, Canvas, DrawOpts, Renderer, TabBar};
-use arabic_term::term::{Terminal, Vt};
+use alef_term::font::Fonts;
+use alef_term::render::{tab_bar_height, Canvas, DrawOpts, Renderer, TabBar};
+use alef_term::term::{Terminal, Vt};
 
 const W: usize = 480;
 const H: usize = 200;

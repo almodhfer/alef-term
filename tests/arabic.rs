@@ -1,11 +1,11 @@
 //! The core of the project: bidi ordering, Arabic joining, and column pinning.
 
-use arabic_term::font::Fonts;
-use arabic_term::layout::Layouter;
-use arabic_term::term::{BidiMode, Terminal, Vt};
+use alef_term::font::Fonts;
+use alef_term::layout::Layouter;
+use alef_term::term::{BidiMode, Terminal, Vt};
 
 /// Lay out a single row of text and return the layout plus the terminal.
-fn layout(text: &str, cols: usize, mode: BidiMode) -> (arabic_term::layout::RowLayout, Terminal) {
+fn layout(text: &str, cols: usize, mode: BidiMode) -> (alef_term::layout::RowLayout, Terminal) {
     let mut fonts = Fonts::new(16.0, None).expect("system fonts");
     let mut t = Terminal::new(3, cols, 10);
     let mut vt = Vt::new();
@@ -16,7 +16,7 @@ fn layout(text: &str, cols: usize, mode: BidiMode) -> (arabic_term::layout::RowL
 }
 
 /// The characters as they appear left-to-right on screen.
-fn visual_string(l: &arabic_term::layout::RowLayout, t: &Terminal, cols: usize) -> String {
+fn visual_string(l: &alef_term::layout::RowLayout, t: &Terminal, cols: usize) -> String {
     let row = &t.grid.screen.rows[0];
     let mut s = String::new();
     let mut last = usize::MAX;
@@ -103,7 +103,7 @@ fn harakat_add_glyphs_without_adding_columns() {
 
 fn paren_gids() -> (u16, u16) {
     let fonts = Fonts::new(16.0, None).unwrap();
-    let mono = fonts.face_id(arabic_term::font::Slot::Mono, Default::default());
+    let mono = fonts.face_id(alef_term::font::Slot::Mono, Default::default());
     let face = &fonts.faces[mono];
     (face.hb.glyph_index('(').unwrap().0, face.hb.glyph_index(')').unwrap().0)
 }
@@ -257,8 +257,8 @@ fn layout_ctx(
     cols: usize,
     pre: &str,
     post: &str,
-) -> arabic_term::layout::RowLayout {
-    use arabic_term::layout::RowContext;
+) -> alef_term::layout::RowLayout {
+    use alef_term::layout::RowContext;
     let mut fonts = Fonts::new(16.0, None).unwrap();
     let mut t = Terminal::new(3, cols, 10);
     let mut vt = Vt::new();
@@ -282,7 +282,7 @@ fn joining_survives_a_soft_wrap() {
     let no_ctx = layout_ctx("بالع", 12, "", "");
     let wrapped = layout_ctx("بالع", 12, "", "الم");
 
-    let last_of = |l: &arabic_term::layout::RowLayout| {
+    let last_of = |l: &alef_term::layout::RowLayout| {
         // Cell 3 is the ع; find the glyph drawn for it.
         l.glyphs.iter().find(|g| g.cell == 3).map(|g| g.glyph)
     };
@@ -300,7 +300,7 @@ fn joining_context_applies_from_the_previous_row_too() {
     // not be shaped as a word-initial form.
     let alone = layout_ctx("الم", 12, "", "");
     let continued = layout_ctx("الم", 12, "بالع", "");
-    let first_of = |l: &arabic_term::layout::RowLayout| {
+    let first_of = |l: &alef_term::layout::RowLayout| {
         l.glyphs.iter().find(|g| g.cell == 0).map(|g| g.glyph)
     };
     assert_ne!(
@@ -316,7 +316,7 @@ fn programming_ligatures_form_and_stay_cell_aligned() {
     // each character becomes half of the arrow, so the glyphs change but the
     // cell count does not. That is exactly what a grid needs.
     let fonts = Fonts::new(16.0, None).unwrap();
-    let id = fonts.face_id(arabic_term::font::Slot::Mono, Default::default());
+    let id = fonts.face_id(alef_term::font::Slot::Mono, Default::default());
     let face = &fonts.faces[id];
     let isolated: Vec<u16> =
         "->".chars().map(|c| face.hb.glyph_index(c).map(|g| g.0).unwrap_or(0)).collect();

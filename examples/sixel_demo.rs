@@ -1,7 +1,7 @@
 //! Render a sixel image plus Arabic text offline, to check images land right.
-use arabic_term::font::Fonts;
-use arabic_term::render::{Canvas, DrawOpts, Renderer};
-use arabic_term::term::{Terminal, Vt};
+use alef_term::font::Fonts;
+use alef_term::render::{Canvas, DrawOpts, Renderer};
+use alef_term::term::{Terminal, Vt};
 
 fn main() -> anyhow::Result<()> {
     let (rows, cols) = (16usize, 50usize);

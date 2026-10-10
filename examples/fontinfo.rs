@@ -1,5 +1,5 @@
 //! Report which faces the font stack actually resolved to.
-use arabic_term::font::{Fonts, Slot, Style};
+use alef_term::font::{Fonts, Slot, Style};
 fn main() -> anyhow::Result<()> {
     let fonts = Fonts::new(16.0, None)?;
     println!("cell {}x{}  baseline {}  arabic_scale {:.3}",

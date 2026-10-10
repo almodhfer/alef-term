@@ -1,8 +1,8 @@
 //! End-to-end: run a real shell on a PTY and check its output reaches the grid.
 
-use arabic_term::grid::Attrs;
-use arabic_term::pty::{Pty, PtyEvent};
-use arabic_term::term::{Terminal, Vt};
+use alef_term::grid::Attrs;
+use alef_term::pty::{Pty, PtyEvent};
+use alef_term::term::{Terminal, Vt};
 use std::time::{Duration, Instant};
 
 fn row_text(t: &Terminal, r: usize) -> String {
@@ -111,7 +111,7 @@ fn editor_pre_shaped_arabic_arrives_as_base_letters() {
         return;
     };
 
-    let dir = std::env::temp_dir().join("arabic-term-test");
+    let dir = std::env::temp_dir().join("alef-term-test");
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("ar.txt");
     std::fs::write(&file, concat!(
@@ -144,7 +144,7 @@ fn editor_pre_shaped_arabic_arrives_as_base_letters() {
 /// Type a string the way the app does: through the key encoder, one key at a
 /// time, then Enter.
 fn type_line(pty: &mut Pty, s: &str) {
-    use arabic_term::keys::{encode, KeyContext};
+    use alef_term::keys::{encode, KeyContext};
     use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
     let k = KeyContext::default();
     for c in s.chars() {
@@ -189,7 +189,7 @@ fn typing_arabic_reaches_the_shell_and_comes_back() {
 
 #[test]
 fn ctrl_c_interrupts_a_running_command() {
-    use arabic_term::keys::{encode, KeyContext};
+    use alef_term::keys::{encode, KeyContext};
     use winit::keyboard::{Key, ModifiersState, SmolStr};
 
     let mut term = Terminal::new(10, 60, 100);
