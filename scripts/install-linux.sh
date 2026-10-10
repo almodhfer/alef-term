@@ -2,10 +2,21 @@
 # Install Alef for the current user on Linux: the executable in
 # ~/.local/bin, and a desktop entry and icon so it appears in the launcher.
 # Run it again to update. PREFIX and XDG_DATA_HOME choose other locations.
+#
+# From a source checkout this builds first. In a release download, where the
+# executable and icons sit beside this script, it installs those.
 set -eu
-cd "$(dirname "$0")/.."
-cargo build --release
-cargo build --release --example icon
+HERE=$(cd "$(dirname "$0")" && pwd)
+if [ -x "$HERE/alef-term" ]; then
+  EXE="$HERE/alef-term"
+  icon() { cp "$HERE/icons/$2.png" "$1"; }
+else
+  cd "$HERE/.."
+  cargo build --release
+  cargo build --release --example icon
+  EXE=target/release/alef-term
+  icon() { ./target/release/examples/icon "$1" "$2" >/dev/null; }
+fi
 
 BIN="${PREFIX:-$HOME/.local}/bin"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -13,12 +24,12 @@ ICONS="$DATA/icons/hicolor"
 mkdir -p "$BIN" "$DATA/applications"
 
 # Replace rather than overwrite, so running windows keep their executable.
-install -m 755 target/release/alef-term "$BIN/alef-term.new"
+install -m 755 "$EXE" "$BIN/alef-term.new"
 mv -f "$BIN/alef-term.new" "$BIN/alef-term"
 
 for s in 48 128 256 512; do
   mkdir -p "$ICONS/${s}x${s}/apps"
-  ./target/release/examples/icon "$ICONS/${s}x${s}/apps/alef-term.png" $s >/dev/null
+  icon "$ICONS/${s}x${s}/apps/alef-term.png" $s
 done
 
 # StartupWMClass matches the window class the app sets, so the launcher and
@@ -27,9 +38,9 @@ cat > "$DATA/applications/alef-term.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=Alef
-Name[ar]=الطرفية العربية
+Name[ar]=ألف
 GenericName=Terminal
-Comment=A terminal emulator that renders Arabic correctly
+Comment=An Arabic-first terminal
 Exec=$BIN/alef-term
 Icon=alef-term
 Terminal=false

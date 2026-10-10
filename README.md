@@ -103,8 +103,28 @@ These are deliberate choices, not omissions:
 
 ## Install
 
-Alef runs on macOS and Linux and is built from source; there are no packaged
-releases yet. You need Rust 1.85 or newer.
+Alef runs on macOS and Linux. Downloads are on the
+[releases page](https://github.com/almodhfer/alef-term/releases).
+
+**macOS (Apple Silicon).** Download `Alef-<version>-macos-arm64.zip`, unzip it
+and move `Alef.app` to Applications. The app is not signed with an Apple
+developer certificate, so macOS refuses to open it the first time. Either
+right-click the app, choose Open, and confirm, or clear the download flag:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Alef.app
+```
+
+**Linux (x86-64).** Download `alef-term-<version>-linux-x86_64.tar.gz`, then:
+
+```sh
+tar -xzf alef-term-*-linux-x86_64.tar.gz
+cd alef-term-*-linux-x86_64 && ./install.sh
+```
+
+This installs the executable to `~/.local/bin` and adds a launcher entry.
+
+**From source.** You need Rust 1.85 or newer.
 
 ```sh
 git clone https://github.com/almodhfer/alef-term && cd alef-term
