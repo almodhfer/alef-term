@@ -122,7 +122,10 @@ fn editor_pre_shaped_arabic_arrives_as_base_letters() {
     let mut term = Terminal::new(24, 80, 100);
     let mut vt = Vt::new();
     let mut pty = Pty::spawn(Some("/bin/sh"), 24, 80, 8, 16, None, || {}).expect("spawn pty");
-    pty.write(format!("{nvim} -u NONE {}\n", file.display()).as_bytes());
+    // Open the file by its short name: a long temporary path makes vim's
+    // "file read" message overflow the last line, and it then waits at a
+    // "Press ENTER" prompt instead of drawing the buffer.
+    pty.write(format!("cd '{}' && {nvim} -u NONE ar.txt\n", dir.display()).as_bytes());
 
     let ok = pump_until(&pty, &mut term, &mut vt, Duration::from_secs(20), |t| {
         t.grid.in_alt() && screen(t).contains("مكتمل")
