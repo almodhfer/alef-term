@@ -13,6 +13,10 @@ the whole line runs right-to-left while any numbers or Latin words inside it
 still run left-to-right. A terminal that stamps one glyph per cell cannot do
 any of that, so Arabic comes out as disconnected letters in the wrong order.
 
+![The same text in Alacritty and in Alef](docs/comparison.png)
+
+*The same output in Alacritty (left) and in Alef (right).*
+
 Alef keeps the grid — every column stays exactly one cell wide, so
 `vim`, `htop` and `git log --graph` keep working — and does the Arabic work at
 draw time instead.
