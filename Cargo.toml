@@ -1,6 +1,6 @@
 [package]
 name = "alef-term"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Alef: an Arabic-first terminal emulator with full bidi and contextual shaping."
 license = "MIT"

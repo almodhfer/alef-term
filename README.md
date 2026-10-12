@@ -42,8 +42,12 @@ true, and copying text gives back what the program actually emitted.
    cell boundaries, لا becomes one ligature, and diacritics get their proper
    GPOS anchors. Runs are split by font, **never by colour** — a colour change
    in the middle of a word must not break the joining.
-5. **Place.** Cursive Arabic is placed as one piece, with the font's own
-   advances, inside the columns its word occupies. Everything else is snapped
+5. **Place.** Cursive Arabic is placed with the font's own advances, a phrase
+   at a time: words separated by single blanks share the columns they occupy,
+   so a word of wide letters (`قصص`) runs into the room its neighbours leave.
+   Only a phrase with more ink than columns is narrowed, every word by the same
+   factor, split between size and width. Closing punctuation is drawn against
+   the word it follows. Everything else is snapped
    to its cell — `cell_w` is a whole number of pixels but a glyph advance is
    not, so a long Latin run laid out by advances drifts about a third of a pixel
    per character and collides within one status bar's width. Snapping is safe
@@ -57,8 +61,10 @@ letters. Each one that maps back to a single base letter is restored, including
 hamza and madda letters such as `إ أ ؤ ئ آ`. Compatibility decomposition is
 followed by canonical recomposition so their marks do not get mistaken for
 extra letters. This prevents boxed characters in fonts such as Scheherazade New
-and lets the shaper join properly. Multi-character ligature forms retain their
-single cell so the editor's following columns do not move.
+and lets the shaper join properly. Lam-alef, which an editor writes as one
+ligature codepoint in one cell, becomes a lam carrying its alef in that cell,
+so the letter before it can join. Other multi-character ligature forms retain
+their single cell so the editor's following columns do not move.
 
 ### Two decisions worth explaining
 
@@ -69,7 +75,9 @@ word itself still reads left-to-right. Table separators and multiple-space
 column gutters stay fixed. Common shell prefixes (`$`, `%`, `#`, `>`, `❯`,
 `➜`) and path-like first tokens retain an LTR base, and so does a field with
 more Latin letters than Arabic ones: an English sentence that merely opens
-with an Arabic word stays left-to-right. This is a terminal policy
+with an Arabic word stays left-to-right. An editor's line number stays in its
+gutter, and a delimited record such as `903,عنوان,مؤلف,2014` keeps its columns
+in order, each reordering inside itself. This is a terminal policy
 on top of the [Unicode Bidirectional Algorithm](https://www.unicode.org/reports/tr9/),
 not an attempt to parse every shell or programming language. For ambiguous
 output, set `bidi_mode = "ltr"` or `"rtl"`, or press `Cmd R` to cycle through
