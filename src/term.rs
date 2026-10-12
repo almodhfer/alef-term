@@ -710,9 +710,9 @@ fn parse_color_semicolon<'a>(iter: &mut vte::ParamsIter<'a>) -> Option<Color> {
 /// Recompose after compatibility decomposition: alef with hamza, for example,
 /// decomposes into a base and mark but is still a single letter. Leaving its
 /// presentation form intact can produce boxed glyphs in Arabic fonts.
-/// Forms that still contain several characters after recomposition (lam-alef
-/// and other ligatures) stay in their single reserved cell; expanding those
-/// would move the editor's following columns.
+/// Forms that still contain several characters after recomposition (the
+/// ligatures) stay in their single reserved cell; expanding those would move
+/// the editor's following columns. Lam-alef is handled by [`lam_alef`].
 #[inline]
 fn unshape_presentation_form(c: char) -> char {
     if !matches!(c as u32, 0xFB50..=0xFDFF | 0xFE70..=0xFEFF) {
@@ -722,6 +722,24 @@ fn unshape_presentation_form(c: char) -> char {
     match (normalized.next(), normalized.next()) {
         (Some(base), None) => base,
         _ => c,
+    }
+}
+
+/// The alef of a lam-alef ligature form, U+FEF5 to U+FEFC.
+///
+/// An editor that shapes Arabic itself writes lam and alef as one ligature
+/// codepoint in one cell. Kept as that codepoint it joins to nothing, so the
+/// letter before it — the ب of بلاد, the س of أرسلان — is left disconnected.
+/// The cell holds a lam carrying its alef instead: still one column, but the
+/// shaper sees two ordinary letters and joins the word through them.
+#[inline]
+fn lam_alef(c: char) -> Option<char> {
+    match c as u32 {
+        0xFEF5 | 0xFEF6 => Some('\u{0622}'),
+        0xFEF7 | 0xFEF8 => Some('\u{0623}'),
+        0xFEF9 | 0xFEFA => Some('\u{0625}'),
+        0xFEFB | 0xFEFC => Some('\u{0627}'),
+        _ => None,
     }
 }
 
@@ -739,34 +757,26 @@ fn dec_graphic(c: char) -> char {
     }
 }
 
-impl Perform for Terminal {
-    fn print(&mut self, c: char) {
-        self.damaged = true;
-        let c = if self.dec_graphics { dec_graphic(c) } else { c };
-        let c = unshape_presentation_form(c);
-        let width = c.width().unwrap_or(0);
-
-        // Zero-width: a combining mark belongs to the cell already written.
-        // Arabic harakat land here, which is what keeps them off the grid as
-        // separate columns while still reaching the shaper.
-        if width == 0 {
-            let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
-            let cols = self.cols();
-            let target = if col == 0 { 0 } else { col.min(cols - 1) };
-            // Step back over the spacer half of a wide character.
-            let r = &mut self.grid.screen.rows[row];
-            let mut idx = target;
-            if idx > 0 && r.cells[idx].ch == ' ' && r.cells[idx].attrs.contains(Attrs::WIDE_SPACER)
-            {
-                idx -= 1;
-            }
-            if self.grid.screen.cursor.col > 0 && !self.grid.screen.cursor.pending_wrap {
-                idx = idx.saturating_sub(1);
-            }
-            r.cells[idx].push_mark(c);
-            return;
+impl Terminal {
+    /// Add `c` to the cell most recently written.
+    fn attach(&mut self, c: char) {
+        let (row, col) = (self.grid.screen.cursor.row, self.grid.screen.cursor.col);
+        let cols = self.cols();
+        let target = if col == 0 { 0 } else { col.min(cols - 1) };
+        // Step back over the spacer half of a wide character.
+        let r = &mut self.grid.screen.rows[row];
+        let mut idx = target;
+        if idx > 0 && r.cells[idx].ch == ' ' && r.cells[idx].attrs.contains(Attrs::WIDE_SPACER)
+        {
+            idx -= 1;
         }
+        if self.grid.screen.cursor.col > 0 && !self.grid.screen.cursor.pending_wrap {
+            idx = idx.saturating_sub(1);
+        }
+        r.cells[idx].push_mark(c);
+    }
 
+    fn print_spacing(&mut self, c: char, width: usize) {
         let cols = self.cols();
         if self.grid.screen.cursor.pending_wrap && self.modes.contains(Modes::AUTOWRAP) {
             self.wrap_line();
@@ -829,6 +839,29 @@ impl Perform for Terminal {
         } else {
             self.grid.screen.cursor.col = next;
         }
+    }
+}
+
+impl Perform for Terminal {
+    fn print(&mut self, c: char) {
+        self.damaged = true;
+        let c = if self.dec_graphics { dec_graphic(c) } else { c };
+        if let Some(alef) = lam_alef(c) {
+            self.print('\u{0644}');
+            self.attach(alef);
+            return;
+        }
+        let c = unshape_presentation_form(c);
+        let width = c.width().unwrap_or(0);
+
+        // Zero-width: a combining mark belongs to the cell already written.
+        // Arabic harakat land here, which is what keeps them off the grid as
+        // separate columns while still reaching the shaper.
+        if width == 0 {
+            self.attach(c);
+            return;
+        }
+        self.print_spacing(c, width);
     }
 
     fn execute(&mut self, byte: u8) {

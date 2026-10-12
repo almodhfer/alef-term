@@ -342,3 +342,39 @@ fn programming_ligatures_form_and_stay_cell_aligned() {
         eprintln!("font has no ligature for '->'; alignment check skipped");
     }
 }
+
+/// vim and neovim write lam-alef as one ligature codepoint in one cell. It has
+/// to reach the shaper as two letters, or the letter before it cannot join.
+#[test]
+fn editor_lam_alef_ligature_joins_to_the_letter_before_it() {
+    use alef_term::selection::{selected_text, Selection};
+    let mut term = Terminal::new(1, 20, 0);
+    // "بلاد" and "الأخبار" as an editor with 'arabicshape' sends them.
+    Vt::new().feed(&mut term, "ب\u{FEFC}د ا\u{FEF8}خبار".as_bytes());
+    let row = &term.grid.screen.rows[0];
+    assert_eq!(row.cells[1].ch, 'ل');
+    assert_eq!(row.cells[1].marks(), ['ا']);
+    assert_eq!(row.cells[2].ch, 'د', "the ligature must keep its single column");
+    assert_eq!(row.cells[5].marks(), ['أ']);
+    let copied = selected_text(&term, Selection { start: (0, 0), end: (0, 9), block: false });
+    assert_eq!(copied, "بلاد الأخبار");
+}
+
+/// A word of wide letters has to be narrowed to fit its cells. The loss is
+/// shared between size and width, so it never drops to half the size of the
+/// words around it.
+#[test]
+fn a_word_too_wide_for_its_cells_stays_close_to_full_size() {
+    let mut fonts = Fonts::new(16.0, None).unwrap();
+    let mut term = Terminal::new(1, 20, 0);
+    Vt::new().feed(&mut term, "قصص مصرية".as_bytes());
+    let row = &term.grid.screen.rows[0];
+    let layout = Layouter::new().layout_row(row, 20, &mut fonts, BidiMode::Auto, true);
+    let full = layout.glyphs.iter().map(|g| g.px).fold(0.0f32, f32::max);
+    for g in &layout.glyphs {
+        assert!(g.px >= full * 0.7, "cell {} drawn at {} of {}", g.cell, g.px, full);
+        assert!(g.stretch >= 0.7 && g.stretch <= 1.0, "cell {} condensed to {}", g.cell, g.stretch);
+        // Nothing may reach past the left edge of the row.
+        assert!(g.x >= -0.5, "cell {} starts at {}", g.cell, g.x);
+    }
+}

@@ -215,15 +215,22 @@ fn pre_shaped_hamza_and_madda_stay_single_letters() {
 }
 
 #[test]
-fn presentation_form_ligatures_are_left_intact() {
-    // U+FEFB LAM WITH ALEF ISOLATED decomposes to two characters. Expanding it
-    // would need a cell the writing program never reserved, so it stays as the
-    // single glyph it already is.
-    for form in ['\u{FEFB}', '\u{FEF5}', '\u{FEF7}', '\u{FEF9}', '\u{FDF2}'] {
+fn presentation_form_ligatures_keep_their_single_cell() {
+    // A ligature form decomposes to several characters. Expanding it across
+    // cells would need columns the writing program never reserved.
+    //
+    // Lam-alef becomes a lam carrying its alef in that one cell, so the shaper
+    // can join the word through it.
+    for (form, alef) in [('\u{FEFB}', 'ا'), ('\u{FEF5}', 'آ'), ('\u{FEF7}', 'أ'), ('\u{FEF9}', 'إ')] {
         let t = run(2, 20, &format!("{form}!"));
-        assert_eq!(line(&t, 0), format!("{form}!"));
+        assert_eq!(line(&t, 0), format!("ل{alef}!"));
+        assert_eq!(t.grid.screen.rows[0].cells[1].ch, '!');
         assert_eq!(t.grid.screen.cursor.col, 2);
     }
+    // Any other ligature stays the single glyph it already is.
+    let t = run(2, 20, "\u{FDF2}!");
+    assert_eq!(line(&t, 0), "\u{FDF2}!");
+    assert_eq!(t.grid.screen.cursor.col, 2);
 }
 
 #[test]
