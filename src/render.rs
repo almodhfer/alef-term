@@ -571,7 +571,7 @@ impl Renderer {
 
                 let gx = self.pad_x + g.x;
                 let gy = y + baseline - g.y;
-                let Some(raster) = fonts.rasterize(g.font, g.glyph, g.px, gx) else { continue };
+                let Some(raster) = fonts.rasterize_condensed(g.font, g.glyph, g.px, gx, g.stretch) else { continue };
                 let ox = gx.floor() as i32 + raster.left;
                 let oy = gy.floor() as i32 - raster.top;
                 canvas.glyph(raster, ox, oy, fg);
@@ -761,7 +761,7 @@ impl Renderer {
                     for g in glyphs {
                         let gy = y + baseline - g.y;
                         let gx = self.pad_x + g.x;
-                        if let Some(raster) = fonts.rasterize(g.font, g.glyph, g.px, gx) {
+                        if let Some(raster) = fonts.rasterize_condensed(g.font, g.glyph, g.px, gx, g.stretch) {
                             let ox = gx.floor() as i32 + raster.left;
                             let oy = gy.floor() as i32 - raster.top;
                             if !raster.color {
@@ -973,7 +973,7 @@ impl Renderer {
         for g in &layout.glyphs {
             let gx = x + g.x;
             let gy = y + baseline - g.y;
-            let Some(raster) = fonts.rasterize(g.font, g.glyph, g.px, gx) else { continue };
+            let Some(raster) = fonts.rasterize_condensed(g.font, g.glyph, g.px, gx, g.stretch) else { continue };
             let ox = gx.floor() as i32 + raster.left;
             let oy = gy.floor() as i32 - raster.top;
             canvas.glyph(raster, ox, oy, fg);

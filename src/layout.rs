@@ -31,6 +31,8 @@ pub struct PositionedGlyph {
     /// Baseline-relative y offset (positive moves the glyph up).
     pub y: f32,
     pub px: f32,
+    /// Horizontal scale of the outline; below 1 for a word condensed to fit.
+    pub stretch: f32,
     /// Logical cell this glyph came from. Colour and attributes are read from
     /// that cell at blit time rather than stored here, so a colour change costs
     /// no reshaping and a cached layout stays valid across one.
@@ -105,6 +107,77 @@ fn auto_base(text: &str) -> Option<Level> {
         }
     }
     (ltr > rtl).then(Level::ltr)
+}
+
+/// Split the field `items[ts..te]` into `(start, end, reorder)` segments,
+/// keeping the parts that are structure rather than text where they were sent.
+///
+/// Two shapes are recognised, and only in a field that holds right-to-left
+/// text at all:
+///
+/// - An editor's line number: digits opening the row or a pane beside a file
+///   tree, one blank, then text in a different colour. Left in the paragraph,
+///   an Arabic line would carry its own line number to the far end of the text.
+/// - A delimited record, `903,عنوان,مؤلف,2014`: digits and a delimiter with no
+///   blank after it. The delimiters then separate fields the way a table's
+///   borders do, so the columns keep their order and each reorders inside
+///   itself. A delimiter followed by a blank is punctuation and stays text.
+///
+/// An Arabic sentence that merely opens with a number — "3 كتب", "1. أولا" —
+/// matches neither and remains one right-to-left paragraph.
+fn structured_fields(
+    items: &[Item],
+    row: &Row,
+    mut ts: usize,
+    te: usize,
+    leads: bool,
+    out: &mut Vec<(usize, usize, bool)>,
+) {
+    let blank = |it: &Item| it.ch == ' ' && it.marks.is_empty();
+    let rtl = |it: &Item| matches!(unicode_bidi::bidi_class(it.ch), BidiClass::R | BidiClass::AL);
+    if !items[ts..te].iter().any(rtl) {
+        out.push((ts, te, true));
+        return;
+    }
+    let digits = |from: usize| items[from..te].iter().take_while(|it| it.ch.is_ascii_digit()).count();
+
+    let d = digits(ts);
+    if leads && d > 0 && ts + d + 1 < te && blank(&items[ts + d]) {
+        let look = |i: usize| {
+            let cell = &row.cells[items[i].cell];
+            (cell.fg, cell.attrs.contains(Attrs::DIM))
+        };
+        if look(ts) != look(ts + d + 1) {
+            out.push((ts, ts + d + 1, false));
+            ts += d + 1;
+        }
+    }
+
+    let d = digits(ts);
+    if d > 0 && ts + d + 1 < te {
+        let delim = items[ts + d].ch;
+        let next = &items[ts + d + 1];
+        if [',', ';', '|', ':'].contains(&delim) && !next.ch.is_ascii_digit() && !blank(next) {
+            out.push((ts, ts + d + 1, false));
+            ts += d + 1;
+            // A colon introduces the rest of the line (`grep -n`); the others
+            // separate every field of the record.
+            if delim != ':' {
+                for i in ts..te - 1 {
+                    if items[i].ch == delim && !blank(&items[i + 1]) {
+                        if ts < i {
+                            out.push((ts, i, true));
+                        }
+                        out.push((i, i + 1, false));
+                        ts = i + 1;
+                    }
+                }
+            }
+        }
+    }
+    if ts < te {
+        out.push((ts, te, true));
+    }
 }
 
 /// One character extracted from the row, with its provenance.
@@ -274,10 +347,23 @@ impl Layouter {
                     while te > ts && blank(&self.items[te - 1]) {
                         te -= 1;
                     }
-                    for (a, b, reorder) in [(start, ts, false), (ts, te, true), (te, i, false)] {
-                        if a < b {
-                            segments.push((a, b, reorder));
+                    if start < ts {
+                        segments.push((start, ts, false));
+                    }
+                    if ts < te {
+                        if bidi_enabled && mode == BidiMode::Auto {
+                            // The field opens a row or a pane: nothing but
+                            // blanks back to the margin or a border.
+                            let leads = self.items[..ts].iter().rev()
+                                .find(|it| !blank(it))
+                                .map_or(true, |it| is_barrier_char(it));
+                            structured_fields(&self.items, row, ts, te, leads, &mut segments);
+                        } else {
+                            segments.push((ts, te, true));
                         }
+                    }
+                    if te < i {
+                        segments.push((te, i, false));
                     }
                 }
             }
@@ -457,7 +543,17 @@ impl Layouter {
         }
         let _ = box_w;
 
-        for (gi, g) in groups.iter().enumerate() {
+        // Groups are visited in logical order, so a word is placed before the
+        // punctuation that follows it. `trailing` is the last item of the
+        // cursive group just placed and the slack left at its trailing edge.
+        let mut trailing: Option<(usize, f32)> = None;
+        // Cursive words collect here until their phrase ends; see `place_phrase`.
+        let mut phrase: Vec<Word> = Vec::new();
+        let mut gap_pending = false;
+        let order: Vec<usize> =
+            if rtl { (0..groups.len()).rev().collect() } else { (0..groups.len()).collect() };
+        for gi in order {
+            let g = &groups[gi];
             let font = g.font;
             let px = fonts.px_for(g.slot);
             let upem = fonts.faces[font].upem;
@@ -577,6 +673,32 @@ impl Layouter {
             // Arabic is exempt because snapping is exactly what tears cursive
             // joins apart: a word has to be placed as one piece.
             if !cursive {
+                // A single blank between two words continues the phrase;
+                // anything else ends it.
+                let it = &self.items[first];
+                let lone_blank = g.items.len() == 1 && it.ch == ' ' && it.marks.is_empty();
+                if rtl && lone_blank && !phrase.is_empty() && !gap_pending {
+                    gap_pending = true;
+                } else {
+                    trailing = place_phrase(&mut phrase, out);
+                    gap_pending = false;
+                }
+                // A cursive word rarely fills the cells it owns, and the slack
+                // sits at its trailing edge — exactly where closing punctuation
+                // goes. Centred in its own cell, a bracket or comma would stand
+                // a visible gap away from the word it closes, so it is drawn
+                // against the word's ink instead.
+                let (pull, pull_by) = match trailing.take() {
+                    Some((prev, slack)) if rtl && first == prev + 1 => {
+                        let closes = |&&i: &&usize| {
+                            let it = &self.items[i];
+                            it.marks.is_empty()
+                                && matches!(it.ch, ')' | ']' | '}' | ',' | '.' | ';' | ':' | '!' | '?' | '»' | '"' | '\'')
+                        };
+                        (g.items.iter().take_while(closes).count(), slack)
+                    }
+                    _ => (0, 0.0),
+                };
                 // Glyph order is visual; cluster IDs remain logical. The next
                 // glyph therefore has a *smaller* cluster ID in RTL runs.
                 let mut boundaries: Vec<usize> = kept.iter()
@@ -613,6 +735,9 @@ impl Layouter {
                     // Centre the cluster in its cell so the rounding slack is
                     // split evenly rather than pushed to one side.
                     let mut pen = col as f32 * cell_w + (cell_span - adv) * 0.5;
+                    if start < pull {
+                        pen += pull_by;
+                    }
                     for &(k, _) in &kept[i..j] {
                         let inkless = item.ch == ' ' && item.marks.is_empty();
                         if !inkless && !crate::boxdraw::is_procedural(item.ch) {
@@ -622,6 +747,7 @@ impl Layouter {
                                 x: pen + poss[k].x_offset as f32 * scale,
                                 y: poss[k].y_offset as f32 * scale,
                                 px,
+                                stretch: 1.0,
                                 cell: item.cell,
                             });
                         }
@@ -633,40 +759,123 @@ impl Layouter {
                 continue;
             }
 
-            // If a cursive group's ink is wider than the columns it owns,
-            // shrink it *isotropically* to fit. Squeezing only the x axis would
-            // distort the letterforms and tear the joins; scaling uniformly
-            // keeps the word's shape and just sets it slightly smaller. Letting
-            // it overhang is not an option between words — the neighbour's ink
-            // would start before this one ends and swallow the space.
-            let (scale, px, natural, shrink) = if natural > span_w && natural > 0.0 {
-                let k = span_w / natural;
-                (scale * k, px * k, span_w, k)
-            } else {
-                (scale, px, natural, 1.0f32)
-            };
-
-            // Anchor at the group's leading edge: right for RTL, left for LTR.
-            // Advances are otherwise used verbatim, so GPOS mark anchoring
-            // places harakat exactly where the font intends.
-            let base = if rtl { span_x + (span_w - natural).max(0.0) } else { span_x };
-
-            for &(k, at) in &kept {
+            // A cursive word is not placed yet. It joins the phrase it belongs
+            // to, and the phrase is set as a whole once it is complete.
+            let glyphs = kept.iter().filter_map(|&(k, at)| {
                 let src = infos[k].cluster as usize;
                 let item = self.items.get(src).unwrap_or(&self.items[g.items[0]]);
                 let inkless = item.ch == ' ' && item.marks.is_empty();
-                if !inkless && !crate::boxdraw::is_procedural(item.ch) {
-                    out.glyphs.push(PositionedGlyph {
-                        font,
-                        glyph: infos[k].glyph_id as u16,
-                        x: base + (at - origin) * shrink + poss[k].x_offset as f32 * scale,
-                        y: poss[k].y_offset as f32 * scale,
-                        px,
-                        cell: item.cell,
-                    });
-                }
+                (!inkless && !crate::boxdraw::is_procedural(item.ch)).then(|| WordGlyph {
+                    glyph: infos[k].glyph_id as u16,
+                    cell: item.cell,
+                    at: at - origin,
+                    x_off: poss[k].x_offset as f32 * scale,
+                    y_off: poss[k].y_offset as f32 * scale,
+                })
+            }).collect();
+            phrase.push(Word {
+                font,
+                px,
+                glyphs,
+                natural,
+                span_x,
+                span_w,
+                last,
+                gap: if gap_pending { cell_w * WORD_GAP } else { 0.0 },
+            });
+            gap_pending = false;
+            // A phrase is laid out from its right edge; a cursive word in a
+            // left-to-right run stands alone.
+            if !rtl {
+                place_phrase(&mut phrase, out);
             }
             self.buf = Some(shaped.clear());
         }
+        place_phrase(&mut phrase, out);
     }
+}
+
+/// The least blank left between two words of a phrase, in cells. Arabic ink
+/// overhangs its advance at both ends, so much less than this reads as one word.
+const WORD_GAP: f32 = 0.6;
+
+/// One shaped glyph of a [`Word`], positioned relative to the word's origin.
+struct WordGlyph {
+    glyph: u16,
+    cell: usize,
+    at: f32,
+    x_off: f32,
+    y_off: f32,
+}
+
+/// A shaped cursive word waiting to be placed with the rest of its phrase.
+struct Word {
+    font: usize,
+    px: f32,
+    glyphs: Vec<WordGlyph>,
+    /// Width of the word's ink at full size.
+    natural: f32,
+    /// The columns the word owns.
+    span_x: f32,
+    span_w: f32,
+    /// Its last item, for the punctuation that may follow.
+    last: usize,
+    /// Blank required between this word and the one before it.
+    gap: f32,
+}
+
+/// Place a phrase — cursive words separated by single blanks, in logical
+/// order — and return its last item with the slack left beyond its final word.
+///
+/// The grid gives every letter one cell, but ص is far wider than ا. A word of
+/// wide letters has more ink than its cells hold while its neighbours have
+/// room to spare, so words are not confined to their own cells:
+///
+/// - Each word starts at the leading edge of its cells unless the word before
+///   it has run over, in which case it is pushed along; a word that would
+///   overrun the end of the phrase is pulled back into the room before it. The
+///   phrase as a whole never leaves the cells it owns.
+/// - Only when the whole phrase has more ink than cells is anything made
+///   narrower, and then every word by the same factor, shared between size and
+///   width. One word at half size beside its neighbours is glaring; a phrase a
+///   few percent smaller and a few percent condensed is not noticed.
+fn place_phrase(phrase: &mut Vec<Word>, out: &mut RowLayout) -> Option<(usize, f32)> {
+    let (first, last) = (phrase.first()?, phrase.last()?);
+    let (right, left) = (first.span_x + first.span_w, last.span_x);
+    let trailing_item = last.last;
+    let needed: f32 = phrase.iter().map(|w| w.natural + w.gap).sum();
+    let k = if needed > right - left && needed > 0.0 { (right - left) / needed } else { 1.0 };
+    // Quantised so a row of condensed words shares cached glyphs.
+    let stretch = if k < 1.0 { (k.sqrt() * 32.0).round() / 32.0 } else { 1.0 };
+    let size = k / stretch;
+
+    // Push along from the leading edge, then pull back from the trailing one.
+    let mut lefts = Vec::with_capacity(phrase.len());
+    let mut limit = f32::INFINITY;
+    for w in phrase.iter() {
+        let edge = (w.span_x + w.span_w).min(limit - w.gap * k);
+        limit = edge - w.natural * k;
+        lefts.push(limit);
+    }
+    let mut bound = left;
+    for (w, x) in phrase.iter().zip(lefts.iter_mut()).rev() {
+        *x = x.max(bound);
+        bound = *x + (w.natural + w.gap) * k;
+    }
+
+    let slack = (lefts.last().copied().unwrap_or(left) - left).max(0.0);
+    for (w, x) in phrase.drain(..).zip(lefts) {
+        for g in w.glyphs {
+            out.glyphs.push(PositionedGlyph {
+                font: w.font,
+                glyph: g.glyph,
+                x: x + (g.at + g.x_off) * k,
+                y: g.y_off * size,
+                px: w.px * size,
+                stretch,
+                cell: g.cell,
+            });
+        }
+    }
+    Some((trailing_item, slack))
 }

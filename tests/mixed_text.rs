@@ -51,6 +51,28 @@ fn english_sentence_opening_with_an_arabic_word_stays_left_to_right() {
 }
 
 #[test]
+fn editor_line_number_stays_in_the_gutter_of_an_arabic_line() {
+    assert_eq!(visual("\x1b[90m  2 \x1b[0mنص عربي هنا", BidiMode::Auto), "  2 انه يبرع صن");
+    // The editor window sits beside a file tree.
+    assert_eq!(visual("src │\x1b[90m  11 \x1b[0m11,بدر البدور,كامل كيلاني,1,2012", BidiMode::Auto),
+        "src │  11 11,رودبلا ردب,يناليك لماك,1,2012");
+    // Same colour as the text: a sentence that opens with a number.
+    assert_eq!(visual("3 كتب جديدة", BidiMode::Auto), "ةديدج بتك 3");
+    assert_eq!(visual("1. أولا", BidiMode::Auto), "الوأ .1");
+}
+
+#[test]
+fn delimited_record_keeps_its_columns_in_order() {
+    assert_eq!(visual("903,الحلل السندسية (الجزء الثالث),شكيب أرسلان,1,2014,46", BidiMode::Auto),
+        "903,)ثلاثلا ءزجلا( ةيسدنسلا للحلا,نالسرأ بيكش,1,2014,46");
+    assert_eq!(visual("\x1b[90m 19 \x1b[0m902,ملقى السبيل,إسماعيل مظهر,2.5", BidiMode::Auto),
+        " 19 902,ليبسلا ىقلم,رهظم ليعامسإ,2.5");
+    assert_eq!(visual("12:نص عربي", BidiMode::Auto), "12:يبرع صن");
+    // A comma followed by a blank is punctuation inside a sentence.
+    assert_eq!(visual("3,أولا, ثم ثانيا", BidiMode::Auto), "3,ايناث مث ,الوأ");
+}
+
+#[test]
 fn rtl_punctuation_glyphs_stay_centered_on_their_own_cells() {
     let mut fonts = Fonts::new(16.0, None).unwrap();
     let mut term = Terminal::new(1, 40, 0);
@@ -63,6 +85,29 @@ fn rtl_punctuation_glyphs_stay_centered_on_their_own_cells() {
     for offset in &offsets {
         assert!((offset - offsets[0]).abs() < 0.01, "punctuation drifted: {offsets:?}");
     }
+}
+
+#[test]
+fn closing_punctuation_sits_against_the_arabic_word_it_follows() {
+    let mut fonts = Fonts::new(16.0, None).unwrap();
+    let mut term = Terminal::new(1, 40, 0);
+    Vt::new().feed(&mut term, "(الجزء الثالث),التالي".as_bytes());
+    let row = &term.grid.screen.rows[0];
+    let layout = Layouter::new().layout_row(row, 40, &mut fonts, BidiMode::Auto, true);
+    let x_of = |ch: char| layout.glyphs.iter().find(|g| row.cells[g.cell].ch == ch).unwrap().x;
+    let cell_x = |ch: char| {
+        let cell = row.cells.iter().position(|c| c.ch == ch).unwrap();
+        layout.column_of(cell) as f32 * fonts.cell_w
+    };
+    // The word's leftmost ink, and the bracket that closes it one cell left.
+    let word_left = layout.glyphs.iter().filter(|g| (7..=12).contains(&g.cell))
+        .map(|g| g.x).fold(f32::MAX, f32::min);
+    let pulled = x_of(')') - cell_x(')');
+    assert!(pulled > 1.0, "closing bracket was left in the middle of its cell");
+    assert!(x_of(')') < word_left, "closing bracket overlaps the word");
+    assert!((x_of(',') - cell_x(',') - pulled).abs() < 1.0, "the comma must follow the bracket");
+    // The opening bracket already touches the word's leading edge.
+    assert!(x_of('(') - cell_x('(') < fonts.cell_w);
 }
 
 #[test]

@@ -166,6 +166,8 @@ pub struct GlyphKey {
     pub size_q: u16,
     /// Horizontal subpixel phase, quantised to 4 buckets.
     pub subpx: u8,
+    /// Horizontal condensing in 1/200 steps; 200 is the natural width.
+    pub stretch_q: u8,
 }
 
 /// Shaping plans, one per face, direction and script.
@@ -817,32 +819,48 @@ impl Fonts {
     }
 
     pub fn rasterize(&mut self, font: usize, glyph: u16, px: f32, subpx: f32) -> Option<&RasterGlyph> {
+        self.rasterize_condensed(font, glyph, px, subpx, 1.0)
+    }
+
+    /// As [`Fonts::rasterize`], with the outline's width scaled by `stretch`.
+    pub fn rasterize_condensed(
+        &mut self,
+        font: usize,
+        glyph: u16,
+        px: f32,
+        subpx: f32,
+        stretch: f32,
+    ) -> Option<&RasterGlyph> {
+        let stretch_q = (stretch * 200.0).round().clamp(1.0, 255.0) as u8;
         let bucket = ((subpx.fract().abs() * 4.0) as u8).min(3);
         let key = GlyphKey {
             font: font as u16,
             glyph,
             size_q: (px * 4.0).round().clamp(0.0, 65535.0) as u16,
             subpx: bucket,
+            stretch_q,
         };
         if !self.cache.contains_key(&key) {
-            let g = self.render_uncached(font, glyph, px, bucket as f32 * 0.25);
+            let g = self.render_uncached(font, glyph, px, bucket as f32 * 0.25, stretch_q as f32 / 200.0);
             self.cache.insert(key, g);
         }
         self.cache.get(&key).and_then(|o| o.as_ref())
     }
 
-    fn render_uncached(&mut self, font: usize, glyph: u16, px: f32, subpx: f32) -> Option<RasterGlyph> {
+    fn render_uncached(&mut self, font: usize, glyph: u16, px: f32, subpx: f32, stretch: f32) -> Option<RasterGlyph> {
         let swf = self.faces[font].swash();
         let variations = self.faces[font].weight.into_iter().map(|w| ("wght", w));
         let mut scaler = self.scalers[font].builder(swf).size(px).hint(true).variations(variations).build();
-        let img = swash::scale::Render::new(&[
+        let mut render = swash::scale::Render::new(&[
             swash::scale::Source::ColorOutline(0),
             swash::scale::Source::ColorBitmap(swash::scale::StrikeWith::BestFit),
             swash::scale::Source::Outline,
-        ])
-        .format(swash::zeno::Format::Alpha)
-        .offset(swash::zeno::Vector::new(subpx, 0.0))
-        .render(&mut scaler, glyph)?;
+        ]);
+        render.format(swash::zeno::Format::Alpha).offset(swash::zeno::Vector::new(subpx, 0.0));
+        if stretch != 1.0 {
+            render.transform(Some(swash::zeno::Transform::scale(stretch, 1.0)));
+        }
+        let img = render.render(&mut scaler, glyph)?;
 
         let color = matches!(img.content, swash::scale::image::Content::Color);
         if img.placement.width == 0 || img.placement.height == 0 {
