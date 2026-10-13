@@ -1290,7 +1290,8 @@ impl Perform for Terminal {
                     self.set_mode(private, p[0], false);
                 }
             }
-            'm' => self.sgr(params),
+            // `CSI > 4 ; 2 m` sets a keyboard mode (XTMODKEYS); it is not SGR.
+            'm' if intermediates.is_empty() => self.sgr(params),
             'n' => match arg(0) {
                 // The colour scheme, which is how a program picks its light
                 // or dark look without guessing from the background.

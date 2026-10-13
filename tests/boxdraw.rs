@@ -18,3 +18,27 @@ fn extra_leading_does_not_make_light_borders_heavy() {
         }
     }
 }
+
+#[test]
+fn quadrant_blocks_tile_with_the_half_blocks() {
+    let (width, height) = (9usize, 21usize);
+    let ink = |chars: &[char]| {
+        let mut pixels = vec![0; width * height];
+        let mut canvas = Canvas { buf: &mut pixels, width, height };
+        canvas.clear(Rgb(0, 0, 0));
+        for &c in chars {
+            assert!(boxdraw::is_procedural(c), "{c} must not come from the font");
+            boxdraw::draw(&mut canvas, c, 0.0, 0.0, width as f32, height as f32, Rgb(255, 255, 255));
+        }
+        pixels.iter().map(|&p| p != 0).collect::<Vec<bool>>()
+    };
+    assert_eq!(ink(&['▘', '▝']), ink(&['▀']));
+    assert_eq!(ink(&['▖', '▗']), ink(&['▄']));
+    assert_eq!(ink(&['▘', '▖']), ink(&['▌']));
+    assert_eq!(ink(&['▝', '▗']), ink(&['▐']));
+    assert_eq!(ink(&['▛', '▗']), ink(&['█']));
+    assert_eq!(ink(&['▜', '▖']), ink(&['█']));
+    assert_eq!(ink(&['▚', '▞']), ink(&['█']));
+    assert_eq!(ink(&['▙']), ink(&['▌', '▄']));
+    assert_eq!(ink(&['▟']), ink(&['▐', '▄']));
+}

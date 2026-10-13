@@ -94,6 +94,15 @@ fn sgr_indexed_and_bright_colors() {
 }
 
 #[test]
+fn keyboard_mode_request_is_not_read_as_text_style() {
+    // XTMODKEYS, as sent by full-screen programs on start-up.
+    let t = run(2, 40, "\x1b[>4;2mA\x1b[>4mB");
+    let c = &t.grid.screen.rows[0].cells;
+    assert_eq!(c[0].attrs, Attrs::empty());
+    assert_eq!(c[1].attrs, Attrs::empty());
+}
+
+#[test]
 fn cursor_addressing_and_erase() {
     let t = run(4, 10, "abcdef\x1b[1;3Hxy");
     assert_eq!(line(&t, 0), "abxyef");

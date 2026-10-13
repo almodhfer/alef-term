@@ -93,7 +93,7 @@ fn arms(c: char) -> Option<Arms> {
 /// True when we render this character ourselves rather than via the font.
 pub fn is_procedural(c: char) -> bool {
     let x = c as u32;
-    arms(c).is_some() || matches!(x, 0x2580..=0x2593)
+    arms(c).is_some() || matches!(x, 0x2580..=0x259F)
 }
 
 /// Draw `c` filling the cell rect exactly.
@@ -103,7 +103,7 @@ pub fn draw(canvas: &mut impl Target, c: char, x: f32, y: f32, w: f32, h: f32, f
     let cp = c as u32;
 
     // Block elements and shades.
-    if (0x2580..=0x2593).contains(&cp) {
+    if (0x2580..=0x259F).contains(&cp) {
         match cp {
             0x2580 => canvas.fill_rect(x, y, w, (h / 2.0).round(), fg), // ▀
             0x2584 => {
@@ -153,7 +153,33 @@ pub fn draw(canvas: &mut impl Target, c: char, x: f32, y: f32, w: f32, h: f32, f
                     }
                 }
             }
-            _ => {}
+            0x2594 => canvas.fill_rect(x, y, w, (h / 8.0).round().max(1.0), fg), // ▔
+            0x2595 => {
+                let bw = (w / 8.0).round().max(1.0);
+                canvas.fill_rect(x + w - bw, y, bw, h, fg) // ▕
+            }
+            // Quadrants, split where the half blocks split so they tile.
+            _ => {
+                let (hw, hh) = ((w / 2.0).round(), (h / 2.0).round());
+                // Bits: upper left, upper right, lower left, lower right.
+                let quadrants: u8 = match cp {
+                    0x2596 => 0b0010,
+                    0x2597 => 0b0001,
+                    0x2598 => 0b1000,
+                    0x2599 => 0b1011,
+                    0x259A => 0b1001,
+                    0x259B => 0b1110,
+                    0x259C => 0b1101,
+                    0x259D => 0b0100,
+                    0x259E => 0b0110,
+                    _ => 0b0111,
+                };
+                for (bit, qx, qy) in [(8, x, y), (4, x + w - hw, y), (2, x, y + h - hh), (1, x + w - hw, y + h - hh)] {
+                    if quadrants & bit != 0 {
+                        canvas.fill_rect(qx, qy, hw, hh, fg);
+                    }
+                }
+            }
         }
         return;
     }
