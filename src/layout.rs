@@ -548,6 +548,7 @@ impl Layouter {
         // cursive group just placed and the slack left at its trailing edge.
         let mut trailing: Option<(usize, f32)> = None;
         // Cursive words collect here until their phrase ends; see `place_phrase`.
+        let room = (fonts.baseline, fonts.cell_h - fonts.baseline);
         let mut phrase: Vec<Word> = Vec::new();
         let mut gap_pending = false;
         let order: Vec<usize> =
@@ -636,7 +637,7 @@ impl Layouter {
                 buf.set_script(rustybuzz::script::ARABIC);
             }
             let face = &fonts.faces[font].hb;
-            let plan = fonts.plans.get(face, font, &mut buf);
+            let plan = fonts.plans.get(face, font, &mut buf, cursive || fonts.ligatures);
             let shaped = rustybuzz::shape_with_plan(face, plan, buf);
 
             let infos = shaped.glyph_infos();
@@ -680,7 +681,7 @@ impl Layouter {
                 if rtl && lone_blank && !phrase.is_empty() && !gap_pending {
                     gap_pending = true;
                 } else {
-                    trailing = place_phrase(&mut phrase, out);
+                    trailing = place_phrase(&mut phrase, out, room, cell_w);
                     gap_pending = false;
                 }
                 // A cursive word rarely fills the cells it owns, and the slack
@@ -738,6 +739,29 @@ impl Layouter {
                     if start < pull {
                         pen += pull_by;
                     }
+                    // An icon is sized to the room it has, whichever cut of the
+                    // font supplies it: about two cells when a blank follows,
+                    // its own cell when text does.
+                    if j == i + 1 && !rtl && item.columns == 1 && item.marks.is_empty() && is_icon(item.ch) {
+                        let roomy = self.items.get(cl as usize + 1)
+                            .map_or(true, |next| next.ch == ' ' && next.marks.is_empty());
+                        let glyph = infos[kept[i].0].glyph_id as u16;
+                        if let Some(icon) = fit_icon(fonts, font, glyph, px, col as f32 * cell_w, cell_w, roomy) {
+                            out.glyphs.push(PositionedGlyph { cell: item.cell, ..icon });
+                            i = j;
+                            continue;
+                        }
+                    }
+                    // A Powerline separator continues the cells beside it, so
+                    // it spans the row's full height like the blocks do.
+                    if j == i + 1 && matches!(item.ch, '\u{e0b0}'..='\u{e0d7}') {
+                        let k = kept[i].0;
+                        if let Some(edge) = fit_separator(fonts, font, infos[k].glyph_id as u16, px, pen) {
+                            out.glyphs.push(PositionedGlyph { cell: item.cell, ..edge });
+                            i = j;
+                            continue;
+                        }
+                    }
                     for &(k, _) in &kept[i..j] {
                         let inkless = item.ch == ' ' && item.marks.is_empty();
                         if !inkless && !crate::boxdraw::is_procedural(item.ch) {
@@ -773,10 +797,32 @@ impl Layouter {
                     y_off: poss[k].y_offset as f32 * scale,
                 })
             }).collect();
+            // How far the word's ink reaches above and below the baseline.
+            let (mut up, mut down) = (0.0f32, 0.0f32);
+            for &(k, _) in &kept {
+                if let Some(ink) = face.glyph_bounding_box(rustybuzz::ttf_parser::GlyphId(infos[k].glyph_id as u16)) {
+                    up = up.max((ink.y_max as f32 + poss[k].y_offset as f32) * scale);
+                    down = down.max(-(ink.y_min as f32 + poss[k].y_offset as f32) * scale);
+                }
+            }
+            // What stands beside the word decides where its spare room goes:
+            // text touching it keeps touching it, and a word that opens the
+            // row keeps the margin.
+            let inked = |it: &Item| !(it.ch == ' ' && it.marks.is_empty());
+            let (west, east) = ((span_x / cell_w).round() as usize, ((span_x + span_w) / cell_w).round() as usize);
+            let leads = rtl && phrase.is_empty()
+                && self.items.iter().all(|it| !inked(it) || out.column_of(it.cell) < east);
+            let held_east = self.items.iter().any(|it| inked(it) && out.column_of(it.cell) == east);
+            let held_west = west > 0
+                && self.items.iter().any(|it| inked(it) && out.column_of(it.cell) + it.columns == west);
             phrase.push(Word {
+                leads: leads || held_east,
+                held_west,
                 font,
                 px,
                 glyphs,
+                up,
+                down,
                 natural,
                 span_x,
                 span_w,
@@ -787,17 +833,78 @@ impl Layouter {
             // A phrase is laid out from its right edge; a cursive word in a
             // left-to-right run stands alone.
             if !rtl {
-                place_phrase(&mut phrase, out);
+                place_phrase(&mut phrase, out, room, cell_w);
             }
             self.buf = Some(shaped.clear());
         }
-        place_phrase(&mut phrase, out);
+        place_phrase(&mut phrase, out, room, cell_w);
     }
 }
 
 /// The least blank left between two words of a phrase, in cells. Arabic ink
 /// overhangs its advance at both ends, so much less than this reads as one word.
+/// Icon fonts keep their symbols in the private use areas. Powerline
+/// separators are left out: they join the cells beside them.
+fn is_icon(c: char) -> bool {
+    matches!(c as u32, 0xE000..=0xE09F | 0xE0D8..=0xF8FF | 0xF0000..=0xFFFFD)
+}
+
+/// Width an icon may take when a blank follows it, in cells.
+const ICON_ROOM: f32 = 1.5;
+/// Icons drawn for one cell are enlarged no further than this.
+const ICON_GROWTH: f32 = 2.0;
+
+/// Place an icon by its ink: centred on the text line, scaled to the cell it
+/// owns or, with `roomy`, into the blank after it.
+fn fit_icon(fonts: &Fonts, font: usize, glyph: u16, px: f32, left: f32, cell_w: f32, roomy: bool) -> Option<PositionedGlyph> {
+    let face = &fonts.faces[font];
+    let ink = face.hb.glyph_bounding_box(rustybuzz::ttf_parser::GlyphId(glyph))?;
+    let em = px / face.upem;
+    let (width, height) = ((ink.x_max - ink.x_min) as f32 * em, (ink.y_max - ink.y_min) as f32 * em);
+    if width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let text = &fonts.faces[fonts.face_id(Slot::Mono, Style::default())];
+    let line = (text.ascent - text.descent) * fonts.size_px;
+    let room = if roomy { cell_w * ICON_ROOM } else { cell_w };
+    let fit = (room / width).min(line * 0.9 / height);
+    let k = fit.min(if roomy { ICON_GROWTH } else { 1.0 });
+    let middle = (text.ascent + text.descent) * 0.5 * fonts.size_px;
+    Some(PositionedGlyph {
+        font,
+        glyph,
+        x: left + ((cell_w - width * k) * 0.5).max(0.0) - ink.x_min as f32 * em * k,
+        y: middle - (ink.y_min + ink.y_max) as f32 * 0.5 * em * k,
+        px: px * k,
+        stretch: 1.0,
+        cell: 0,
+    })
+}
+
+/// Stretch a separator's ink over the row's height, keeping its width.
+fn fit_separator(fonts: &Fonts, font: usize, glyph: u16, px: f32, pen: f32) -> Option<PositionedGlyph> {
+    let face = &fonts.faces[font];
+    let ink = face.hb.glyph_bounding_box(rustybuzz::ttf_parser::GlyphId(glyph))?;
+    let em = px / face.upem;
+    let height = (ink.y_max - ink.y_min) as f32 * em;
+    if height <= 0.0 {
+        return None;
+    }
+    let k = fonts.cell_h / height;
+    Some(PositionedGlyph {
+        font,
+        glyph,
+        x: pen,
+        y: fonts.baseline - fonts.cell_h - ink.y_min as f32 * em * k,
+        px: px * k,
+        stretch: (1.0 / k).clamp(0.25, 1.25),
+        cell: 0,
+    })
+}
+
 const WORD_GAP: f32 = 0.6;
+/// How far marks may reach into a neighbouring row, as a share of the row.
+const MARK_SPILL: f32 = 0.2;
 
 /// One shaped glyph of a [`Word`], positioned relative to the word's origin.
 struct WordGlyph {
@@ -813,6 +920,9 @@ struct Word {
     font: usize,
     px: f32,
     glyphs: Vec<WordGlyph>,
+    /// Reach of the word's ink above and below the baseline at full size.
+    up: f32,
+    down: f32,
     /// Width of the word's ink at full size.
     natural: f32,
     /// The columns the word owns.
@@ -822,6 +932,10 @@ struct Word {
     last: usize,
     /// Blank required between this word and the one before it.
     gap: f32,
+    /// The word keeps its right edge: it opens the row, or text touches it.
+    leads: bool,
+    /// Text touches the word's left edge.
+    held_west: bool,
 }
 
 /// Place a phrase — cursive words separated by single blanks, in logical
@@ -839,28 +953,68 @@ struct Word {
 ///   narrower, and then every word by the same factor, shared between size and
 ///   width. One word at half size beside its neighbours is glaring; a phrase a
 ///   few percent smaller and a few percent condensed is not noticed.
-fn place_phrase(phrase: &mut Vec<Word>, out: &mut RowLayout) -> Option<(usize, f32)> {
+fn place_phrase(phrase: &mut Vec<Word>, out: &mut RowLayout, room: (f32, f32), cell_w: f32) -> Option<(usize, f32)> {
     let (first, last) = (phrase.first()?, phrase.last()?);
     let (right, left) = (first.span_x + first.span_w, last.span_x);
     let trailing_item = last.last;
     let needed: f32 = phrase.iter().map(|w| w.natural + w.gap).sum();
-    let k = if needed > right - left && needed > 0.0 { (right - left) / needed } else { 1.0 };
-    // Quantised so a row of condensed words shares cached glyphs.
-    let stretch = if k < 1.0 { (k.sqrt() * 32.0).round() / 32.0 } else { 1.0 };
+    let wide = if needed > right - left && needed > 0.0 { (right - left) / needed } else { 1.0 };
+    // Stacked marks reach past a row sized for plain letters. They may spill
+    // a little into the rows beside it; past that the phrase is drawn
+    // smaller, in steps, until its tallest word fits.
+    let spill = (room.0 + room.1) * MARK_SPILL;
+    let tall = phrase.iter().fold(1.0f32, |fit, w| {
+        let up = if w.up > room.0 + spill { (room.0 + spill) / w.up } else { 1.0 };
+        let down = if w.down > room.1 + spill { (room.1 + spill) / w.down } else { 1.0 };
+        fit.min(up).min(down)
+    });
+    let tall = if tall < 1.0 { ((tall * 16.0).floor() / 16.0).max(0.5) } else { 1.0 };
+    let k = wide.min(tall);
+    // Quantised so a row of condensed words shares cached glyphs. Narrowing
+    // is shared between size and width, as far as the row's height allows.
+    let stretch = if k < tall { ((k.sqrt().max(k / tall)) * 32.0).round() / 32.0 } else { 1.0 };
     let size = k / stretch;
 
-    // Push along from the leading edge, then pull back from the trailing one.
+    // Words are usually narrower than their cells. Set close together, with
+    // one cell between them, the phrase reads as text; the room left over
+    // goes to its two ends, or to one end when the other is held. No word
+    // moves more than a cell from the cells it owns, so the pointer and the
+    // cursor still land on the word they point at.
+    let blank = |w: &Word| if w.gap > 0.0 { cell_w } else { 0.0 };
+    let set: f32 = phrase.iter().map(|w| w.natural * k + blank(w)).sum();
     let mut lefts = Vec::with_capacity(phrase.len());
-    let mut limit = f32::INFINITY;
-    for w in phrase.iter() {
-        let edge = (w.span_x + w.span_w).min(limit - w.gap * k);
-        limit = edge - w.natural * k;
-        lefts.push(limit);
-    }
-    let mut bound = left;
-    for (w, x) in phrase.iter().zip(lefts.iter_mut()).rev() {
-        *x = x.max(bound);
-        bound = *x + (w.natural + w.gap) * k;
+    if set <= right - left {
+        let mut pen = if first.leads {
+            right
+        } else if last.held_west {
+            left + set
+        } else {
+            right - (right - left - set) * 0.5
+        };
+        let mut shift = 0.0f32;
+        for w in phrase.iter() {
+            pen -= blank(w) + w.natural * k;
+            // A word split by a change of colour stays in one piece.
+            if w.gap > 0.0 || lefts.is_empty() {
+                let own = w.span_x + (w.span_w - w.natural * k) * 0.5;
+                shift = (pen - own).clamp(-cell_w, cell_w) - (pen - own);
+            }
+            lefts.push(pen + shift);
+        }
+    } else {
+        // Over-full: push along from the leading edge, then pull back from
+        // the trailing one.
+        let mut limit = f32::INFINITY;
+        for w in phrase.iter() {
+            let edge = (w.span_x + w.span_w).min(limit - w.gap * k);
+            limit = edge - w.natural * k;
+            lefts.push(limit);
+        }
+        let mut bound = left;
+        for (w, x) in phrase.iter().zip(lefts.iter_mut()).rev() {
+            *x = x.max(bound);
+            bound = *x + (w.natural + w.gap) * k;
+        }
     }
 
     let slack = (lefts.last().copied().unwrap_or(left) - left).max(0.0);

@@ -100,6 +100,8 @@ pub struct Face {
     pub weight: Option<f32>,
     // Shaped sample extents/advance in em units, plus terminal column count.
     ink_samples: Vec<(f32, f32, f32, usize)>,
+    /// The same measurements for unvocalised words, which size the row.
+    plain_samples: Vec<(f32, f32, f32, usize)>,
 }
 
 impl Face {
@@ -130,6 +132,7 @@ impl Face {
             space_advance,
             weight,
             ink_samples: Vec::new(),
+            plain_samples: Vec::new(),
             hb,
         })
     }
@@ -180,7 +183,7 @@ pub struct GlyphKey {
 /// properties.
 #[derive(Default)]
 pub struct PlanCache {
-    plans: HashMap<(usize, rustybuzz::Direction, Option<rustybuzz::Script>), rustybuzz::ShapePlan>,
+    plans: HashMap<(usize, rustybuzz::Direction, Option<rustybuzz::Script>, bool), rustybuzz::ShapePlan>,
 }
 
 impl PlanCache {
@@ -193,14 +196,18 @@ impl PlanCache {
         face: &rustybuzz::Face<'_>,
         font: usize,
         buf: &mut rustybuzz::UnicodeBuffer,
+        ligatures: bool,
     ) -> &rustybuzz::ShapePlan {
         buf.guess_segment_properties();
         let direction = buf.direction();
         let script = Some(buf.script()).filter(|s| *s != rustybuzz::script::UNKNOWN);
         self.plans
-            .entry((font, direction, script))
+            .entry((font, direction, script, ligatures))
             .or_insert_with(|| {
-                rustybuzz::ShapePlan::new(face, direction, script, buf.language().as_ref(), &[])
+                let off = |tag: &[u8; 4]| rustybuzz::Feature::new(rustybuzz::ttf_parser::Tag::from_bytes(tag), 0, ..);
+                let plain = [off(b"calt"), off(b"liga"), off(b"clig"), off(b"dlig")];
+                let features: &[rustybuzz::Feature] = if ligatures { &[] } else { &plain };
+                rustybuzz::ShapePlan::new(face, direction, script, buf.language().as_ref(), features)
             })
     }
 }
@@ -210,6 +217,8 @@ pub struct Fonts {
     /// Actual Arabic family, so a missing requested font is never mislabeled.
     pub arabic_family: String,
     pub plans: PlanCache,
+    /// Whether Latin runs take the font's programming ligatures.
+    pub ligatures: bool,
     /// faces index by (slot, style).
     map: HashMap<(Slot, Style), usize>,
     /// `map` with every fallback already resolved, indexed by slot and style.
@@ -392,6 +401,9 @@ fn best_face<'a>(db: &'a fontdb::Database, family: &str, style: Style) -> Option
     best.map(|(face, _)| face)
 }
 
+/// Tallest row the automatic Arabic size may ask for, in Latin lines.
+const ROW_LIMIT: f32 = 1.25;
+
 const SLOTS: usize = 5;
 
 impl Style {
@@ -489,28 +501,42 @@ impl Fonts {
             return Err(anyhow!("no usable monospace font found"));
         }
 
-        // Some book faces position stacked marks outside their advertised
-        // ascender/descender. Measure shaped ink in every Arabic style so those
-        // marks stay inside a row, including at the bottom of the viewport.
+        // Rows are sized for unvocalised Arabic; a vocalised word is fitted to
+        // the row by the layout. Both need the ink of shaped words, because
+        // book faces position marks outside their advertised ascender and
+        // descender.
+        const VOCALISED: &str = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ مُحَمَّدٌ سُبْحَانَ ضُوءٌ قُرْآنٌ إِنَّا أَعْطَيْنَاكَ فَصَلِّ";
+        const PLAIN: &str = "جميع عليكم الطاء كلا يحيى أؤئ إصلاح خطأ الأولى مسؤول شيئا";
+        let is_mark = |c: &char| matches!(*c as u32, 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06ED);
+        let measure = |face: &Face, word: &str| {
+            let mut buf = rustybuzz::UnicodeBuffer::new();
+            buf.push_str(word);
+            buf.set_direction(rustybuzz::Direction::RightToLeft);
+            buf.set_script(rustybuzz::script::ARABIC);
+            let shaped = rustybuzz::shape(&face.hb, &[], buf);
+            let (mut up, mut down) = (0.0f32, 0.0f32);
+            for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
+                if let Some(bounds) = face.hb.glyph_bounding_box(rustybuzz::ttf_parser::GlyphId(info.glyph_id as u16)) {
+                    up = up.max((bounds.y_max as f32 + pos.y_offset as f32) / face.upem);
+                    down = down.max(-(bounds.y_min as f32 + pos.y_offset as f32) / face.upem);
+                }
+            }
+            let advance = shaped.glyph_positions().iter().map(|p| p.x_advance as f32).sum::<f32>() / face.upem;
+            let cols = word.chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).sum();
+            (up, down, advance, cols)
+        };
         for style in STYLES {
             if let Some(&id) = map.get(&(Slot::Arabic, style)) {
-                let face = &mut faces[id];
-                for word in "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ مُحَمَّدٌ سُبْحَانَ ضُوءٌ قُرْآنٌ إِنَّا أَعْطَيْنَاكَ فَصَلِّ".split_whitespace() {
-                    let mut buf = rustybuzz::UnicodeBuffer::new();
-                    buf.push_str(word);
-                    buf.set_direction(rustybuzz::Direction::RightToLeft);
-                    buf.set_script(rustybuzz::script::ARABIC);
-                    let shaped = rustybuzz::shape(&face.hb, &[], buf);
-                    let (mut up, mut down) = (0.0f32, 0.0f32);
-                    for (info, pos) in shaped.glyph_infos().iter().zip(shaped.glyph_positions()) {
-                        if let Some(bounds) = face.hb.glyph_bounding_box(rustybuzz::ttf_parser::GlyphId(info.glyph_id as u16)) {
-                            up = up.max((bounds.y_max as f32 + pos.y_offset as f32) / face.upem);
-                            down = down.max(-(bounds.y_min as f32 + pos.y_offset as f32) / face.upem);
-                        }
-                    }
-                    let advance = shaped.glyph_positions().iter().map(|p| p.x_advance as f32).sum::<f32>() / face.upem;
-                    let cols = word.chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).sum();
-                    face.ink_samples.push((up, down, advance, cols));
+                for word in VOCALISED.split_whitespace() {
+                    let sample = measure(&faces[id], word);
+                    faces[id].ink_samples.push(sample);
+                    let bare: String = word.chars().filter(|c| !is_mark(c)).collect();
+                    let sample = measure(&faces[id], &bare);
+                    faces[id].plain_samples.push(sample);
+                }
+                for word in PLAIN.split_whitespace() {
+                    let sample = measure(&faces[id], word);
+                    faces[id].plain_samples.push(sample);
                 }
             }
         }
@@ -521,6 +547,7 @@ impl Fonts {
             faces,
             arabic_family,
             plans: PlanCache::default(),
+            ligatures: true,
             map,
             table: [[0; 4]; SLOTS],
             has_slot: [false; SLOTS],
@@ -600,7 +627,38 @@ impl Fonts {
         // Take the smallest ratio, not the mean: it is the word that would
         // overflow first, and staying under it keeps every sample inside its
         // columns. A small margin absorbs words denser than any sample.
-        (ratios[0] * 0.97).clamp(0.8, 2.0)
+        let mut scale = (ratios[0] * 0.97).clamp(0.8, 2.0);
+        // A face with long ascenders and descenders would then set the height
+        // of every row. Hold the row near the Latin line instead and draw the
+        // face a little smaller.
+        let mono = &self.faces[self.map[&(Slot::Mono, Style::default())]];
+        let limit = (mono.ascent - mono.descent) * self.size_px * ROW_LIMIT;
+        for _ in 0..16 {
+            let (ascent, descent) = self.plain_extent(scale);
+            if ascent + descent <= limit || scale <= 0.8 {
+                break;
+            }
+            scale = (scale * 0.96).max(0.8);
+        }
+        scale
+    }
+
+    /// Ascent and descent a row needs for Latin text and unvocalised Arabic
+    /// drawn at `scale`.
+    fn plain_extent(&self, scale: f32) -> (f32, f32) {
+        let mono = &self.faces[self.map[&(Slot::Mono, Style::default())]];
+        let (mut ascent, mut descent) = (mono.ascent * self.size_px, -mono.descent * self.size_px);
+        for style in STYLES {
+            if let Some(&ar) = self.map.get(&(Slot::Arabic, style)) {
+                let apx = self.size_px * scale;
+                for &(up, down, advance, cols) in &self.faces[ar].plain_samples {
+                    let fit = if advance > 0.0 { (cols as f32 * self.cell_w / (advance * apx)).min(1.0) } else { 1.0 };
+                    ascent = ascent.max(up * apx * fit);
+                    descent = descent.max(down * apx * fit);
+                }
+            }
+        }
+        (ascent, descent)
     }
 
     fn recompute_metrics(&mut self) {
@@ -608,30 +666,22 @@ impl Fonts {
         // Cell width from the space advance keeps columns aligned with what
         // the shell assumes; round so glyph rasterisation stays on-pixel.
         self.cell_w = (mono.space_advance * self.size_px).round().max(1.0);
-        let mut ascent = mono.ascent * self.size_px;
-        let mut descent = -mono.descent * self.size_px;
-
         // The Arabic face is drawn larger to match the Latin weight, so the
-        // line box has to accommodate *its* extent too — otherwise tashkeel
-        // above the letters clips into the row above.
-        for style in STYLES {
-            if let Some(&ar) = self.map.get(&(Slot::Arabic, style)) {
-                let apx = self.size_px * self.arabic_scale;
-                ascent = ascent.max(self.faces[ar].ascent * apx);
-                descent = descent.max(-self.faces[ar].descent * apx);
-                for &(up, down, advance, cols) in &self.faces[ar].ink_samples {
-                    // Match the layout's isotropic fit for each word instead of
-                    // reserving full-size ink for words that render smaller.
-                    let fit = if advance > 0.0 { (cols as f32 * self.cell_w / (advance * apx)).min(1.0) } else { 1.0 };
-                    ascent = ascent.max(up * apx * fit);
-                    descent = descent.max(down * apx * fit);
-                }
-            }
-        }
-
+        // line box makes room for its letters. Marks are left out: sizing every
+        // row for stacked tashkeel made rows twice the height of the text, and
+        // the layout fits a vocalised word to the row instead.
+        let (ascent, descent) = self.plain_extent(self.arabic_scale);
         let line = ascent + descent;
         self.cell_h = (line * self.line_height).ceil().max(1.0);
         self.baseline = (ascent + (self.cell_h - line) * 0.5).round();
+    }
+
+    /// Turn the font's programming ligatures on or off for Latin text.
+    pub fn set_ligatures(&mut self, on: bool) {
+        if self.ligatures != on {
+            self.ligatures = on;
+            self.generation += 1;
+        }
     }
 
     /// Change leading without stretching glyphs or clipping Arabic marks.

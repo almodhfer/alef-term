@@ -166,8 +166,10 @@ fn installed_arabic_presets_preserve_marks_and_cell_mapping() {
                 let h = fonts.cell_h;
                 if let Some(raster) = fonts.rasterize(glyph.font, glyph.glyph, glyph.px, glyph.x) {
                     let top = y.floor() - raster.top as f32;
-                    assert!(top >= -1.0 && top + raster.height as f32 <= h + 1.0,
-                        "{}: marks clip the row ({top}, {}, {h})", choice.family(), raster.height);
+                    // Marks may reach a little into the rows beside this one.
+                    let spill = h * 0.2 + 1.0;
+                    assert!(top >= -spill && top + raster.height as f32 <= h + spill,
+                        "{}: marks leave the row ({top}, {}, {h})", choice.family(), raster.height);
                 }
             }
             for cell in 0..60 {
@@ -218,4 +220,35 @@ fn noto_variable_bold_has_the_correct_shaping_and_raster_weight() {
     let regular_ink: u64 = fonts.rasterize(regular, glyph, px, 0.0).unwrap().data.iter().map(|&n| n as u64).sum();
     let bold_ink: u64 = fonts.rasterize(bold, glyph, px, 0.0).unwrap().data.iter().map(|&n| n as u64).sum();
     assert!(bold_ink > regular_ink, "bold must render heavier, not only shape differently");
+}
+
+#[test]
+fn rows_are_sized_for_text_not_for_stacked_marks() {
+    for family in ["Geeza Pro", "Noto Naskh Arabic", "Amiri"] {
+        let fonts = Fonts::with_families(16.0, None, None, Some(family)).unwrap();
+        if fonts.arabic_family != family { continue; }
+        assert!(fonts.cell_h <= 16.0 * 1.7, "{family}: rows are {} px tall at 16 px", fonts.cell_h);
+    }
+}
+
+#[test]
+fn ligatures_can_be_turned_off() {
+    use alef_term::{layout::Layouter, term::{Terminal, Vt}};
+    let glyphs = |on: bool| {
+        let mut fonts = Fonts::new(16.0, None).unwrap();
+        fonts.set_ligatures(on);
+        let mut term = Terminal::new(1, 20, 0);
+        Vt::new().feed(&mut term, b"a -> b != c");
+        let row = term.grid.viewport_row(0);
+        let layout = Layouter::new().layout_row(row, 20, &mut fonts, term.bidi_mode, true);
+        layout.glyphs.iter().map(|g| (g.cell, g.glyph)).collect::<Vec<_>>()
+    };
+    let plain = glyphs(false);
+    // One glyph per character, each in its own cell.
+    assert_eq!(plain.iter().map(|&(cell, _)| cell).collect::<Vec<_>>(), vec![0, 2, 3, 5, 7, 8, 10]);
+    let mut fonts = Fonts::new(16.0, None).unwrap();
+    let face = fonts.face_id(Slot::Mono, Style::default());
+    let hyphen = fonts.faces[face].hb.glyph_index('-').unwrap().0;
+    assert_eq!(plain[1].1, hyphen, "the hyphen of `->` must stay a hyphen");
+    let _ = &mut fonts;
 }

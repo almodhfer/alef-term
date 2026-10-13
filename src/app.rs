@@ -51,6 +51,7 @@ pub struct Config {
     pub padding_y: f32,
     pub bidi_mode: BidiMode,
     pub copy_on_select: bool,
+    pub ligatures: bool,
     pub minimum_contrast: f32,
     pub working_directory: Option<String>,
     /// Reapplied after reading the file on an explicit settings reload.
@@ -104,6 +105,7 @@ impl Default for Config {
             padding_y: 10.0,
             bidi_mode: BidiMode::default(),
             copy_on_select: false,
+            ligatures: true,
             minimum_contrast: 4.5,
             working_directory: None,
             cli_overrides: Default::default(),
@@ -327,6 +329,7 @@ impl Pane {
             cfg.arabic_font.as_deref(),
         )?;
         fonts.set_line_height(cfg.line_height);
+        fonts.set_ligatures(cfg.ligatures);
         let mut renderer = Renderer::new();
         renderer.pad_x = cfg.padding_x;
         renderer.pad_y = cfg.padding_y;
@@ -503,6 +506,7 @@ impl Pane {
     fn apply_arabic_font(&mut self, family: &str, mut fonts: Fonts) {
         self.cfg.arabic_font = Some(family.to_string());
         fonts.set_line_height(self.cfg.line_height);
+        fonts.set_ligatures(self.cfg.ligatures);
         self.fonts = fonts;
         self.renderer.invalidate_layouts();
         self.atlas_generation = u64::MAX;
@@ -526,6 +530,7 @@ impl Pane {
         self.search = None;
         if let Some(fonts) = fonts { self.fonts = fonts; }
         self.fonts.set_line_height(cfg.line_height);
+        self.fonts.set_ligatures(cfg.ligatures);
         self.base_font_size = cfg.font_size;
         let renderer_changed = self.cfg.software != cfg.software;
         self.cfg = cfg.clone();

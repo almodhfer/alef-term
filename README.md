@@ -250,8 +250,11 @@ theme, and `#rrggbb` overrides for the foreground, background, cursor,
 selection and the 16 ANSI colours.
 
 The grid has 12 logical pixels of horizontal padding and 10 vertically; these
-insets scale with Retina displays. The default line box fits both fonts, and
-`line_height` adds leading without stretching glyphs. The initial window size
+insets scale with Retina displays. The default line box fits Latin text and
+unvocalised Arabic; stacked diacritics may reach a little into the rows beside
+them, and a word that would reach further is drawn smaller. `line_height` adds
+leading without stretching glyphs. `ligatures = false` turns off the font's
+programming ligatures, which keeps ASCII art intact. The initial window size
 includes these margins, so `cols` and `rows` describe the usable grid. Light
 box-drawing strokes follow the font's column width, so increasing line spacing
 does not make borders heavier.
@@ -260,6 +263,7 @@ does not make borders heavier.
 padding_x = 12
 padding_y = 10
 line_height = 1.0           # 1.0..2.0, based on the shared Arabic/Latin line box
+ligatures = true            # programming ligatures such as -> and !=
 bidi_mode = "auto"         # auto | ltr | rtl
 ```
 
