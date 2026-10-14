@@ -398,7 +398,7 @@ background overrides under `[theme.custom.dark]` and light ones under
 | `Cmd C` / `Cmd V` | copy / paste |
 | `Cmd F` | search the scrollback; `Enter` / `Shift Enter` (or the arrows) step to older / newer hits, `Cmd G` likewise, `Esc` closes |
 | double / triple click | select a word / a whole line, soft wraps included |
-| `Cmd` + click | open the link under the pointer (OSC 8 or a bare URL); hold `Cmd` to see it underlined |
+| `Cmd` + click | open the link under the pointer (OSC 8 or a bare URL), also inside tmux and other mouse-using programs; web and mail links open, `file://` links are shown in Finder, other schemes are refused; hold `Cmd` to see it underlined |
 | scroll wheel | smooth scrollback, or the application if it grabbed the mouse |
 | `Shift` + wheel | always the terminal's own scrollback |
 | `Shift` `PgUp` / `PgDn` | scroll by a page |

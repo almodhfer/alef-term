@@ -211,3 +211,18 @@ mod gestures {
         assert!(url_at(&t, 0, 12).is_none());
     }
 }
+
+#[test]
+fn links_only_open_web_and_mail_and_reveal_files() {
+    use alef_term::selection::{link_target, LinkTarget};
+    assert_eq!(link_target("https://example.com/a?b"), Some(LinkTarget::Open("https://example.com/a?b".into())));
+    assert_eq!(link_target("mailto:a@example.com"), Some(LinkTarget::Open("mailto:a@example.com".into())));
+    // A local file could be a script; it is shown in its folder, not run.
+    assert_eq!(link_target("file:///tmp/My%20Dir/run.command"),
+        Some(LinkTarget::Reveal("/tmp/My Dir/run.command".into())));
+    assert_eq!(link_target("file://host/tmp/x#frag"), Some(LinkTarget::Reveal("/tmp/x".into())));
+    for url in ["x-apple.systempreferences:com.apple.preference", "javascript:alert(1)",
+                "ssh://host", "vscode://file/tmp/x", "/etc/passwd", "file://host"] {
+        assert_eq!(link_target(url), None, "{url}");
+    }
+}

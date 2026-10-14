@@ -179,6 +179,9 @@ pub struct Pane {
     session_title: String,
     occluded: bool,
     mouse_bypass: bool,
+    /// The left button went down on a link, which was opened; its release
+    /// belongs to that click too.
+    link_click: bool,
     commands: Option<CommandPalette>,
     notice: Option<(String, std::time::Instant)>,
     /// Directory the shell starts in, for windows opened from another.
@@ -251,15 +254,29 @@ pub struct Pane {
 const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Hand a URL to the system's opener.
-fn open_url(url: &str) {
-    // Only the schemes url_at recognises get here; nothing shell-expanded.
+/// Follow a link as [`link_target`] allows; false when it is refused.
+fn open_url(url: &str) -> bool {
+    use crate::selection::{link_target, LinkTarget};
     #[cfg(target_os = "macos")]
     let cmd = "open";
     #[cfg(not(target_os = "macos"))]
     let cmd = "xdg-open";
-    if let Err(e) = std::process::Command::new(cmd).arg(url).spawn() {
+    let mut command = std::process::Command::new(cmd);
+    match link_target(url) {
+        Some(LinkTarget::Open(url)) => command.arg(url),
+        #[cfg(target_os = "macos")]
+        Some(LinkTarget::Reveal(path)) => command.arg("-R").arg(path),
+        #[cfg(not(target_os = "macos"))]
+        Some(LinkTarget::Reveal(path)) => {
+            let folder = if path.is_dir() { path.as_path() } else { path.parent().unwrap_or(&path) };
+            command.arg(folder.to_path_buf())
+        }
+        None => return false,
+    };
+    if let Err(e) = command.spawn() {
         log::warn!("could not open {url}: {e}");
     }
+    true
 }
 
 /// The key a chord was pressed on, for matching shortcuts. macOS reports
@@ -345,6 +362,7 @@ impl Pane {
             tab_group: String::new(),
             occluded: false,
             mouse_bypass: false,
+            link_click: false,
             commands: None,
             notice: cfg.startup_warning.as_ref().map(|text| (text.clone(), std::time::Instant::now() + std::time::Duration::from_secs(10))),
             session_title: "alef-term".into(),
@@ -1460,6 +1478,22 @@ impl Pane {
                     }
                     return;
                 }
+                // Cmd-click (Ctrl-click on Linux) follows a link even while a
+                // program such as tmux has the mouse; mouse reports cannot
+                // carry Cmd anyway.
+                if button == MouseButton::Left {
+                    if state == ElementState::Pressed && PLATFORM.link(self.modifiers) {
+                        if let Some((_, url)) = url_at(&self.term, self.mouse_at.line, self.mouse_at.cell) {
+                            if !open_url(&url) {
+                                self.notify("Link not opened: only web, mail and file links are followed");
+                            }
+                            self.link_click = true;
+                            return;
+                        }
+                    } else if state == ElementState::Released && std::mem::take(&mut self.link_click) {
+                        return;
+                    }
+                }
                 let bypass = self.mouse_bypass || self.modifiers.shift_key();
                 self.mouse_bypass = state == ElementState::Pressed && bypass;
                 let at = self.mouse_at;
@@ -1480,14 +1514,6 @@ impl Pane {
                 }
                 match (button, state) {
                     (MouseButton::Left, ElementState::Pressed) => {
-                        // Cmd-click (Ctrl-click on Linux) follows a link
-                        // instead of selecting.
-                        if PLATFORM.link(self.modifiers) {
-                            if let Some((_, url)) = url_at(&self.term, at.line, at.cell) {
-                                open_url(&url);
-                                return;
-                            }
-                        }
                         let now = std::time::Instant::now();
                         self.clicks = match self.last_click {
                             Some((t, h)) if h == at && now.duration_since(t) < MULTI_CLICK => (self.clicks % 3) + 1,

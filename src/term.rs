@@ -1444,7 +1444,7 @@ fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// `%xx` escapes to bytes, as in a file:// URI.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

@@ -163,6 +163,31 @@ fn is_url_char(c: char) -> bool {
 
 const SCHEMES: [&str; 5] = ["https://", "http://", "file://", "ftp://", "mailto:"];
 
+/// What clicking a link does. A program chooses an OSC 8 link's target and
+/// the text shown over it, so the target alone decides: a web or mail
+/// address opens, a local file is only shown in its folder (opening it could
+/// run it), and any other scheme, which could start another app, is refused.
+#[derive(Debug, PartialEq)]
+pub enum LinkTarget {
+    Open(String),
+    Reveal(std::path::PathBuf),
+}
+
+pub fn link_target(url: &str) -> Option<LinkTarget> {
+    let lower = url.to_ascii_lowercase();
+    if ["https://", "http://", "ftp://", "mailto:"].iter().any(|s| lower.starts_with(s)) {
+        return Some(LinkTarget::Open(url.to_string()));
+    }
+    if lower.starts_with("file://") {
+        // file://host/path: the host part, often empty, is not a folder.
+        let rest = &url["file://".len()..];
+        let path = &rest[rest.find('/')?..];
+        let path = path.split(['?', '#']).next().unwrap_or(path);
+        return Some(LinkTarget::Reveal(crate::term::percent_decode(path).into()));
+    }
+    None
+}
+
 /// A link under `cell` on `line`: an OSC 8 hyperlink the program attached, or
 /// a bare URL in the text. Bare URLs are followed across soft wraps, since a
 /// long one is usually broken by the margin.
