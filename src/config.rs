@@ -30,6 +30,9 @@ pub struct File {
     pub copy_on_select: Option<bool>,
     /// Programming ligatures in Latin text; on unless set to false.
     pub ligatures: Option<bool>,
+    /// macOS window tabs; false draws the tab bar inside one window instead,
+    /// which a tiling window manager needs.
+    pub native_tabs: Option<bool>,
     /// Text contrast ratio, 1 disables adjustment; background colours stay exact.
     pub minimum_contrast: Option<f32>,
     /// Directory for the first window; new windows inherit OSC 7 when available.
@@ -249,6 +252,7 @@ impl File {
         }
         if let Some(v) = self.copy_on_select { cfg.copy_on_select = v; }
         if let Some(v) = self.ligatures { cfg.ligatures = v; }
+        if let Some(v) = self.native_tabs { cfg.native_tabs = v; }
         if let Some(v) = self.minimum_contrast {
             if !(1.0..=21.0).contains(&v) { return Err(anyhow!("minimum_contrast: expected 1..=21")); }
             cfg.minimum_contrast = v;

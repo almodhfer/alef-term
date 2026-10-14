@@ -52,6 +52,8 @@ pub struct Config {
     pub bidi_mode: BidiMode,
     pub copy_on_select: bool,
     pub ligatures: bool,
+    /// macOS window tabs; when false, tabs share one window and its own bar.
+    pub native_tabs: bool,
     pub minimum_contrast: f32,
     pub working_directory: Option<String>,
     /// Reapplied after reading the file on an explicit settings reload.
@@ -106,6 +108,7 @@ impl Default for Config {
             bidi_mode: BidiMode::default(),
             copy_on_select: false,
             ligatures: true,
+            native_tabs: true,
             minimum_contrast: 4.5,
             working_directory: None,
             cli_overrides: Default::default(),
@@ -942,7 +945,6 @@ impl Pane {
     }
 
     /// Ask for the tab `step` along from this one, wrapping at the ends.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn step_tab(&mut self, step: isize) {
         if let Some((titles, active)) = &self.tabs {
             let index = (*active as isize + step).rem_euclid(titles.len() as isize) as usize;
@@ -951,7 +953,6 @@ impl Pane {
     }
 
     /// Ask for tab `number`, counting from 1; 9 is always the last.
-    #[cfg_attr(target_os = "macos", allow(dead_code))]
     fn select_tab(&mut self, number: usize) {
         if let Some((titles, _)) = &self.tabs {
             let index = if number == 9 { titles.len() - 1 } else { number - 1 };
@@ -1102,11 +1103,11 @@ impl Pane {
             }),
             Shortcut::SelectTab(number) => {
                 #[cfg(target_os = "macos")]
-                if let Some(window) = &self.window {
+                if let (true, Some(window)) = (self.cfg.native_tabs, &self.window) {
                     use winit::platform::macos::WindowExtMacOS;
                     window.select_tab_at_index(if number == 9 { window.num_tabs().saturating_sub(1) } else { number - 1 });
+                    return;
                 }
-                #[cfg(not(target_os = "macos"))]
                 self.select_tab(number);
             }
             Shortcut::Close => self.request = Some(Request::Close),
@@ -1119,12 +1120,12 @@ impl Pane {
             Action::NewTab => self.request = Some(Request::NewTab),
             Action::NextTab | Action::PreviousTab => {
                 #[cfg(target_os = "macos")]
-                if let Some(window) = &self.window {
+                if let (true, Some(window)) = (self.cfg.native_tabs, &self.window) {
                     use winit::platform::macos::WindowExtMacOS;
                     if action == Action::NextTab { window.select_next_tab(); }
                     else { window.select_previous_tab(); }
+                    return;
                 }
-                #[cfg(not(target_os = "macos"))]
                 self.step_tab(if action == Action::NextTab { 1 } else { -1 });
             }
             Action::NewWindow => self.request = Some(Request::NewWindow),
@@ -1244,19 +1245,24 @@ impl Pane {
         self.window.as_ref().map(|w| w.id())
     }
 
-    /// Create the window and start the shell.
-    fn open(&mut self, el: &ActiveEventLoop) {
+    /// Create the window and start the shell. A tab joining a window takes
+    /// that window's size as `like`: asking for the configured grid instead
+    /// would resize and move the whole tab group.
+    fn open(&mut self, el: &ActiveEventLoop, like: Option<winit::dpi::PhysicalSize<u32>>) {
         if self.window.is_some() {
             return;
         }
         let (cw, ch) = self.cell_size();
         let attrs = Window::default_attributes()
             .with_title(&self.session_title)
-            .with_theme(Some(window_theme(&self.cfg.palette)))
-            .with_inner_size(LogicalSize::new(
+            .with_theme(Some(window_theme(&self.cfg.palette)));
+        let attrs = match like {
+            Some(size) => attrs.with_inner_size(size),
+            None => attrs.with_inner_size(LogicalSize::new(
                 self.cfg.cols as f32 * cw + 2.0 * self.cfg.padding_x,
                 self.cfg.rows as f32 * ch + 2.0 * self.cfg.padding_y,
-            ));
+            )),
+        };
         #[cfg(target_os = "macos")]
         let attrs = {
             use winit::platform::macos::WindowAttributesExtMacOS;
@@ -1275,10 +1281,12 @@ impl Pane {
         self.set_display_scale(win.scale_factor() as f32);
         // Recompute the initial size from the physical font metrics: rounding
         // at Retina scale need not be twice the rounding at logical scale.
-        let _ = win.request_inner_size(winit::dpi::PhysicalSize::new(
-            (self.cfg.cols as f32 * self.fonts.cell_w + 2.0 * self.renderer.pad_x) as u32,
-            (self.cfg.rows as f32 * self.fonts.cell_h + 2.0 * self.renderer.pad_y) as u32,
-        ));
+        if like.is_none() {
+            let _ = win.request_inner_size(winit::dpi::PhysicalSize::new(
+                (self.cfg.cols as f32 * self.fonts.cell_w + 2.0 * self.renderer.pad_x) as u32,
+                (self.cfg.rows as f32 * self.fonts.cell_h + 2.0 * self.renderer.pad_y) as u32,
+            ));
+        }
 
         let gpu = if self.cfg.software {
             None
@@ -1961,6 +1969,10 @@ impl App {
     }
 
     fn open_pane(&mut self, el: &ActiveEventLoop, start_dir: Option<String>, tab_group: Option<String>) {
+        let like = tab_group.as_ref().and_then(|group| {
+            let pane = self.panes.iter().find(|p| &p.tab_group == group && p.window.is_some())?;
+            pane.window.as_ref().map(|w| w.inner_size())
+        });
         let group = tab_group.unwrap_or_else(|| {
             self.next_group += 1;
             format!("alef-term-{}-{}", std::process::id(), self.next_group)
@@ -1975,7 +1987,7 @@ impl App {
                 pane.tab_group = group;
                 self.next_session += 1;
                 pane.session_title = format!("Shell {}", self.next_session);
-                pane.open(el);
+                pane.open(el, like);
                 if !pane.exited {
                     self.panes.push(pane);
                 }
@@ -2019,7 +2031,7 @@ impl ApplicationHandler<Wake> for App {
                 let dir = self.panes[i].term.cwd.clone();
                 self.open_pane(el, dir, None);
             }
-            Some(Request::NewTab) if PLATFORM == Platform::Linux => {
+            Some(Request::NewTab) if PLATFORM == Platform::Linux || !self.cfg.native_tabs => {
                 let dir = self.panes[i].term.cwd.clone();
                 self.open_tab(i, dir);
             }

@@ -264,6 +264,7 @@ padding_x = 12
 padding_y = 10
 line_height = 1.0           # 1.0..2.0, based on the shared Arabic/Latin line box
 ligatures = true            # programming ligatures such as -> and !=
+native_tabs = true          # macOS: false keeps tabs in one window (for tiling window managers)
 bidi_mode = "auto"         # auto | ltr | rtl
 ```
 
