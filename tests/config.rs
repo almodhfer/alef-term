@@ -43,6 +43,7 @@ scroll_lines = 5
 cursor_shape = "bar"
 cursor_blink = true
 visual_bell = false
+copy_flash = false
 theme = "light"
 [colors]
 background = "#ffffff"
@@ -56,6 +57,7 @@ ansi = ["#000000", "#111111"]
     assert_eq!(cfg.cursor_shape, CursorShape::Bar);
     assert!(cfg.cursor_blink);
     assert!(!cfg.visual_bell);
+    assert!(!cfg.copy_flash);
     // Light theme, then overrides on top of it.
     assert_eq!(cfg.palette.bg, Rgb(255, 255, 255));
     assert_eq!(cfg.palette.cursor, Rgb(255, 0, 0));

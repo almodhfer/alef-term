@@ -50,6 +50,7 @@ pub struct File {
     pub cursor_shape: Option<String>,
     pub cursor_blink: Option<bool>,
     pub visual_bell: Option<bool>,
+    pub copy_flash: Option<bool>,
     /// A built-in theme, by name (`alef-term --list-themes`); the base the
     /// colours below adjust.
     pub theme: Option<String>,
@@ -281,6 +282,9 @@ impl File {
         }
         if let Some(v) = self.visual_bell {
             cfg.visual_bell = v;
+        }
+        if let Some(v) = self.copy_flash {
+            cfg.copy_flash = v;
         }
         if let Some(r) = &self.renderer {
             cfg.software = match r.as_str() {

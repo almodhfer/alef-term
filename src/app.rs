@@ -76,6 +76,8 @@ pub struct Config {
     pub cursor_blink: bool,
     /// Flash the window edge on BEL.
     pub visual_bell: bool,
+    /// Flash the window edge, in green, when text reaches the clipboard.
+    pub copy_flash: bool,
     pub palette: crate::color::Palette,
     /// The theme the palette comes from, and the configuration file's colours
     /// laid over it.
@@ -122,6 +124,7 @@ impl Default for Config {
             cursor_shape: CursorShape::Block,
             cursor_blink: false,
             visual_bell: true,
+            copy_flash: true,
             palette: crate::color::Palette::dark(),
             theme: crate::color::default_theme(),
             colors: Default::default(),
@@ -241,6 +244,8 @@ pub struct Pane {
     blink_at: std::time::Instant,
     /// When the last bell rang, for the flash.
     bell_at: Option<std::time::Instant>,
+    /// When text was last copied, for the flash.
+    copied_at: Option<std::time::Instant>,
     /// When the last desktop notification went out, for rate limiting.
     notified_at: Option<std::time::Instant>,
     /// Titles of the tabs in this window and which one is on show, while it
@@ -296,6 +301,8 @@ fn unmodified_key(event: &winit::event::KeyEvent) -> Key {
 const BLINK_HALF: std::time::Duration = std::time::Duration::from_millis(530);
 /// How long the bell flash lasts.
 const BELL_FLASH: std::time::Duration = std::time::Duration::from_millis(150);
+/// How long the copy flash lasts; a little longer, as it confirms rather than warns.
+const COPY_FLASH: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Per-phase frame times, reported to stderr every 60 frames.
 struct Profile {
@@ -406,6 +413,7 @@ impl Pane {
             blink_on: true,
             blink_at: std::time::Instant::now() + BLINK_HALF,
             bell_at: None,
+            copied_at: None,
             notified_at: None,
             tabs: None,
             pointer: PhysicalPosition::new(0.0, 0.0),
@@ -766,9 +774,7 @@ impl Pane {
             self.show_notification(n);
         }
         if let Some(text) = self.term.clipboard_write.take() {
-            if let Some(cb) = &mut self.clipboard {
-                let _ = cb.set_text(text);
-            }
+            self.copy(text);
         }
         if !self.term.replies.is_empty() {
             let replies = std::mem::take(&mut self.term.replies);
@@ -1082,6 +1088,19 @@ impl Pane {
         self.needs_redraw = true;
     }
 
+    /// Put text on the clipboard and flash the edge to confirm; false when the
+    /// clipboard refused it.
+    fn copy(&mut self, text: String) -> bool {
+        if self.clipboard.as_mut().is_none_or(|cb| cb.set_text(text).is_err()) {
+            return false;
+        }
+        if self.cfg.copy_flash {
+            self.copied_at = Some(std::time::Instant::now());
+            self.needs_redraw = true;
+        }
+        true
+    }
+
     fn command_open(&mut self) {
         self.picker_cancel();
         self.search = None;
@@ -1160,10 +1179,8 @@ impl Pane {
             Action::Reload => self.request = Some(Request::Reload),
             Action::Copy => {
                 let text = self.selection.map(|s| selected_text(&self.term, s)).unwrap_or_default();
-                if !text.is_empty() {
-                    if self.clipboard.as_mut().is_none_or(|cb| cb.set_text(text).is_err()) {
-                        self.notify("Could not copy to the clipboard");
-                    }
+                if !text.is_empty() && !self.copy(text) {
+                    self.notify("Could not copy to the clipboard");
                 }
             }
             Action::Paste => self.paste_clipboard(),
@@ -1552,9 +1569,7 @@ impl Pane {
                             }
                         }
                         if self.cfg.copy_on_select && !t.is_empty() {
-                            if let Some(cb) = &mut self.clipboard {
-                                let _ = cb.set_text(t);
-                            }
+                            self.copy(t);
                         }
                     }
                     (MouseButton::Middle, ElementState::Pressed) => {
@@ -1696,6 +1711,11 @@ impl Pane {
                     .map(|t| 1.0 - t.elapsed().as_secs_f32() / BELL_FLASH.as_secs_f32())
                     .filter(|b| *b > 0.0)
                     .unwrap_or(0.0);
+                let copied = self
+                    .copied_at
+                    .map(|t| 1.0 - t.elapsed().as_secs_f32() / COPY_FLASH.as_secs_f32())
+                    .filter(|b| *b > 0.0)
+                    .unwrap_or(0.0);
                 let bar = self.search.as_ref().map(|s| SearchBar {
                     query: &s.query,
                     total: s.matches.len(),
@@ -1713,6 +1733,7 @@ impl Pane {
                     cursor_on,
                     cursor_shape: self.cfg.cursor_shape,
                     bell,
+                    copied,
                     hover_link: self.hover_link.as_ref().map(|l| l.0),
                     highlights: self.search.as_ref().map_or(&[], |s| s.spans.as_slice()),
                     current: self.search.as_ref().map_or(&[], |s| s.current_spans()),
@@ -1810,7 +1831,11 @@ impl Pane {
         if !bell_active {
             self.bell_at = None;
         }
-        let animating = animating || bell_active;
+        let copy_active = self.copied_at.is_some_and(|t| t.elapsed() < COPY_FLASH);
+        if !copy_active {
+            self.copied_at = None;
+        }
+        let animating = animating || bell_active || copy_active;
         // A tab not on show keeps reading its shell but draws nothing.
         if (self.needs_redraw || animating) && !self.occluded && self.output.is_some() {
             if let Some(w) = &self.window {

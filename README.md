@@ -245,7 +245,7 @@ Settings live in `~/.config/alef-term/config.toml` (or the file named by
 `$ALEF_TERM_CONFIG` or `--config`). Every key is optional and flags override
 the file; a typo is reported on startup rather than ignored. See
 [`docs/config.example.toml`](docs/config.example.toml) for the full list: fonts,
-size, scrollback, scroll speed, cursor shape and blink, the visual bell, the
+size, scrollback, scroll speed, cursor shape and blink, the visual bell and copy flash, the
 theme, and `#rrggbb` overrides for the foreground, background, cursor,
 selection and the 16 ANSI colours.
 

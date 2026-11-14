@@ -24,6 +24,7 @@ alternate_scroll = true     # wheel becomes arrow keys in less, man, ...
 cursor_shape = "block"      # block | underline | bar
 cursor_blink = false
 visual_bell = true
+copy_flash = true          # green edge flash when text is copied
 
 minimum_contrast = 4.5      # 1..21; 1 preserves exact application ink colours
 theme = "dark"              # see `alef-term --list-themes`, or press Cmd Shift T

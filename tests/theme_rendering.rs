@@ -320,3 +320,18 @@ fn contrast_adjustment_chooses_a_reachable_value_and_preserves_readable_ink() {
     let best = Rgb(130, 140, 150).ensure_contrast(bg, 21.0);
     assert_eq!(best, Rgb(0, 0, 0), "unreachable ratios use the stronger endpoint");
 }
+
+#[test]
+fn copy_flash_rings_the_edge_in_green_and_bell_in_the_cursor_colour() {
+    let mut rig = Rig::new("hi");
+    let palette = rig.term.palette.clone();
+    let edges = |paint: &Paint, c: Rgb| paint.rects.iter().filter(|&&r| r == c).count();
+
+    let quiet = rig.draw(opts());
+    let copied = rig.draw(DrawOpts { copied: 1.0, ..opts() });
+    assert_eq!(edges(&copied, palette.colors[2]) - edges(&quiet, palette.colors[2]), 4);
+
+    let bell = rig.draw(DrawOpts { bell: 1.0, ..opts() });
+    assert_eq!(edges(&bell, palette.colors[2]), edges(&quiet, palette.colors[2]));
+    assert_eq!(edges(&bell, palette.cursor) - edges(&quiet, palette.cursor), 4);
+}

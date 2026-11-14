@@ -39,6 +39,8 @@ pub struct DrawOpts<'a> {
     pub cursor_shape: CursorShape,
     /// Bell flash intensity, 0 for none.
     pub bell: f32,
+    /// Copy flash intensity, 0 for none: the same edge, in green.
+    pub copied: f32,
     /// A link under the pointer, underlined so it reads as clickable.
     pub hover_link: Option<Span>,
     /// Search hits, sorted by line then cell, and the spans of the current one.
@@ -72,6 +74,7 @@ impl Default for DrawOpts<'_> {
             cursor_on: true,
             cursor_shape: CursorShape::Block,
             bell: 0.0,
+            copied: 0.0,
             hover_link: None,
             highlights: &[],
             current: &[],
@@ -704,11 +707,13 @@ impl Renderer {
                 palette.highlight_fg(palette.fg, palette.selection_bg), palette.selection_bg, term);
         }
 
-        // --- bell: a brief flash of the window edge ---
-        if opts.bell > 0.01 {
-            let a = opts.bell.clamp(0.0, 1.0);
+        // --- bell and copy: a brief flash of the window edge ---
+        for (strength, fg) in [(opts.copied, palette.colors[2]), (opts.bell, palette.cursor)] {
+            if strength <= 0.01 {
+                continue;
+            }
+            let a = strength.clamp(0.0, 1.0);
             let blend = |c: u8, d: u8| ((c as f32 * a) + (d as f32 * (1.0 - a))) as u8;
-            let fg = palette.cursor;
             let col = Rgb(blend(fg.0, def_bg.0), blend(fg.1, def_bg.1), blend(fg.2, def_bg.2));
             let (w, h) = (canvas.width() as f32, canvas.height() as f32);
             let t = 3.0;
